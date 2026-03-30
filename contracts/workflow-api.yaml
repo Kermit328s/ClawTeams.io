@@ -1,0 +1,639 @@
+---
+openapi: "3.0.3"
+info:
+  title: ClawTeams Workflow API
+  description: >
+    工作流层（Workflow）对外 API 契约。提供任务生命周期管理、
+    工作流执行与监控、状态单元查询等功能。
+  version: "1.0.0"
+  contact:
+    name: ClawTeams
+    url: https://clawteams.io
+
+servers:
+  - url: http://localhost:3001/api/v1
+    description: 本地开发环境
+  - url: https://workflow.clawteams.io/v1
+    description: 生产环境
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+tags:
+  - name: tasks
+    description: 任务管理
+  - name: workflows
+    description: 工作流管理
+  - name: state-units
+    description: 状态单元查询
+  - name: artifacts
+    description: 档案管理
+
+paths:
+  # ─── 任务 ───
+  /tasks:
+    post:
+      tags: [tasks]
+      summary: 创建任务
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: 任务创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+    get:
+      tags: [tasks]
+      summary: 查询任务列表
+      operationId: listTasks
+      parameters:
+        - name: workflow_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, assigned, running, completed, failed, blocked, human_required]
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+                  total:
+                    type: integer
+
+  /tasks/{task_id}:
+    get:
+      tags: [tasks]
+      summary: 获取任务详情
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tasks/{task_id}/cancel:
+    post:
+      tags: [tasks]
+      summary: 取消任务
+      operationId: cancelTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: 任务已取消
+        "409":
+          description: 任务已完成，无法取消
+
+  /tasks/{task_id}/retry:
+    post:
+      tags: [tasks]
+      summary: 重试失败任务
+      operationId: retryTask
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "202":
+          description: 重试已触发
+
+  # ─── 工作流 ───
+  /workflows:
+    post:
+      tags: [workflows]
+      summary: 创建工作流
+      operationId: createWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkflowRequest"
+      responses:
+        "201":
+          description: 工作流创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+
+    get:
+      tags: [workflows]
+      summary: 查询工作流列表
+      operationId: listWorkflows
+      parameters:
+        - name: goal_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [running, completed, failed, paused, cancelled]
+      responses:
+        "200":
+          description: 工作流列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Workflow"
+
+  /workflows/{workflow_id}:
+    get:
+      tags: [workflows]
+      summary: 获取工作流详情（含任务 DAG）
+      operationId: getWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: 工作流详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDetail"
+
+  /workflows/{workflow_id}/pause:
+    post:
+      tags: [workflows]
+      summary: 暂停工作流
+      operationId: pauseWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: 工作流已暂停
+
+  /workflows/{workflow_id}/resume:
+    post:
+      tags: [workflows]
+      summary: 恢复工作流
+      operationId: resumeWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: 工作流已恢复
+
+  # ─── 状态单元 ───
+  /state-units:
+    get:
+      tags: [state-units]
+      summary: 查询状态单元历史
+      operationId: listStateUnits
+      parameters:
+        - name: task_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 状态单元版本历史（按版本号降序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StateUnit"
+
+  /state-units/{task_id}/current:
+    get:
+      tags: [state-units]
+      summary: 获取任务的当前状态单元
+      operationId: getCurrentStateUnit
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 当前状态单元
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StateUnit"
+
+  /state-units/{task_id}/rollback:
+    post:
+      tags: [state-units]
+      summary: 回滚状态单元到指定版本（移动指针，不删除历史）
+      operationId: rollbackStateUnit
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_version]
+              properties:
+                target_version:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: 回滚成功
+
+  # ─── 档案 ───
+  /artifacts:
+    post:
+      tags: [artifacts]
+      summary: 注册档案元数据
+      operationId: createArtifact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateArtifactRequest"
+      responses:
+        "201":
+          description: 档案注册成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+
+  /artifacts/{artifact_id}:
+    get:
+      tags: [artifacts]
+      summary: 获取档案元数据
+      operationId: getArtifact
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 档案元数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+
+  /artifacts/{artifact_id}/presigned-url:
+    get:
+      tags: [artifacts]
+      summary: 获取档案的预签名下载 URL
+      operationId: getArtifactPresignedUrl
+      parameters:
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: expires_in
+          in: query
+          schema:
+            type: integer
+            default: 3600
+            description: URL 有效期（秒）
+      responses:
+        "200":
+          description: 预签名 URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                  expires_at:
+                    type: string
+                    format: date-time
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Agent-API-Key
+
+  parameters:
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WorkflowId:
+      name: workflow_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 未认证
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    CreateTaskRequest:
+      type: object
+      required: [title, task_type, input, workflow_id]
+      properties:
+        title:
+          type: string
+        task_type:
+          type: string
+        input:
+          type: object
+          description: 任务输入（符合 TaskInput schema）
+        workflow_id:
+          type: string
+          format: uuid
+        priority:
+          type: string
+          enum: [critical, high, medium, low]
+          default: medium
+        upstream_task_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        deadline:
+          type: string
+          format: date-time
+
+    Task:
+      type: object
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        task_type:
+          type: string
+        state:
+          type: string
+          enum: [pending, assigned, running, completed, failed, blocked, human_required, cancelled]
+        assigned_agent_id:
+          type: string
+          format: uuid
+        workflow_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskDetail:
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          properties:
+            input:
+              type: object
+            current_state_unit:
+              $ref: "#/components/schemas/StateUnit"
+            artifact_ids:
+              type: array
+              items:
+                type: string
+                format: uuid
+            upstream_task_ids:
+              type: array
+              items:
+                type: string
+                format: uuid
+            downstream_task_ids:
+              type: array
+              items:
+                type: string
+                format: uuid
+
+    StateUnit:
+      type: object
+      description: 最小状态单元（参见 state-unit-schema.yaml）
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+        result:
+          type: object
+        artifact_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        version:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+
+    CreateWorkflowRequest:
+      type: object
+      required: [goal_id, title]
+      properties:
+        goal_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+
+    Workflow:
+      type: object
+      properties:
+        workflow_id:
+          type: string
+          format: uuid
+        goal_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed, paused, cancelled]
+        created_at:
+          type: string
+          format: date-time
+
+    WorkflowDetail:
+      allOf:
+        - $ref: "#/components/schemas/Workflow"
+        - type: object
+          properties:
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+            edges:
+              type: array
+              items:
+                type: object
+                properties:
+                  from_task_id:
+                    type: string
+                    format: uuid
+                  to_task_id:
+                    type: string
+                    format: uuid
+                  edge_type:
+                    type: string
+
+    Artifact:
+      type: object
+      description: 档案元数据（参见 artifact-schema.yaml）
+      properties:
+        artifact_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        title:
+          type: string
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        storage:
+          type: object
+
+    CreateArtifactRequest:
+      type: object
+      required: [type, title, storage]
+      properties:
+        type:
+          type: string
+          enum: [document, code, dataset, report, image, video, config, model, composite]
+        title:
+          type: string
+        description:
+          type: string
+        storage:
+          type: object
+          required: [bucket, key]
+          properties:
+            bucket:
+              type: string
+            key:
+              type: string
+            content_type:
+              type: string
+            size_bytes:
+              type: integer
+        related_task_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        tags:
+          type: array
+          items:
+            type: string

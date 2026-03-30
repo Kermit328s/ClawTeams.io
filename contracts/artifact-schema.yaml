@@ -1,0 +1,137 @@
+---
+# 档案交接格式
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://clawteams.io/schemas/artifact.json"
+title: Artifact
+description: >
+  档案（Artifact）是龙虾之间交接工作产出的标准格式。
+  一个 Artifact 可以是文档、代码、数据集、报告等任何可交付物。
+
+type: object
+required:
+  - artifact_id
+  - type
+  - title
+  - created_by
+  - created_at
+  - storage
+
+properties:
+  artifact_id:
+    type: string
+    format: uuid
+    description: 档案唯一标识
+
+  type:
+    type: string
+    enum:
+      - document
+      - code
+      - dataset
+      - report
+      - image
+      - video
+      - config
+      - model
+      - composite
+    description: 档案类型
+
+  title:
+    type: string
+    maxLength: 256
+    description: 档案标题
+
+  description:
+    type: string
+    maxLength: 2000
+    description: 档案描述
+
+  created_by:
+    type: string
+    format: uuid
+    description: 创建者（龙虾 ID 或用户 ID）
+
+  created_at:
+    type: string
+    format: date-time
+    description: 创建时间
+
+  updated_at:
+    type: string
+    format: date-time
+    description: 最后更新时间
+
+  version:
+    type: integer
+    minimum: 1
+    default: 1
+    description: 档案版本号
+
+  storage:
+    type: object
+    required:
+      - backend
+      - bucket
+      - key
+    properties:
+      backend:
+        type: string
+        enum: [r2, s3, minio]
+        description: 存储后端
+      bucket:
+        type: string
+        description: 存储桶名
+      key:
+        type: string
+        description: 对象键
+      size_bytes:
+        type: integer
+        minimum: 0
+        description: 文件大小（字节）
+      content_type:
+        type: string
+        description: MIME 类型
+      checksum_sha256:
+        type: string
+        description: SHA-256 校验和
+
+  tags:
+    type: array
+    items:
+      type: string
+    default: []
+    description: 标签列表
+
+  related_task_ids:
+    type: array
+    items:
+      type: string
+      format: uuid
+    default: []
+    description: 关联任务 ID 列表
+
+  access_control:
+    type: object
+    properties:
+      visibility:
+        type: string
+        enum: [private, team, public]
+        default: team
+        description: 可见性
+      allowed_agents:
+        type: array
+        items:
+          type: string
+          format: uuid
+        description: 允许访问的龙虾列表（visibility=private 时生效）
+      allowed_teams:
+        type: array
+        items:
+          type: string
+          format: uuid
+        description: 允许访问的团队列表
+
+  metadata:
+    type: object
+    additionalProperties: true
+    description: 扩展元数据

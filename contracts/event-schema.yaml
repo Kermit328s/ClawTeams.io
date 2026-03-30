@@ -1,0 +1,120 @@
+---
+# 事件总线标准事件结构
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://clawteams.io/schemas/event.json"
+title: ClawTeamsEvent
+description: >
+  事件总线的标准事件结构。所有系统内部通信均通过此格式传递事件，
+  确保可追溯、可重放、可过滤。
+
+type: object
+required:
+  - event_id
+  - event_type
+  - source
+  - timestamp
+  - payload
+
+properties:
+  event_id:
+    type: string
+    format: uuid
+    description: 事件唯一标识
+
+  event_type:
+    type: string
+    description: >
+      事件类型，格式为 domain.action，例如：
+      task.completed, task.failed, agent.registered,
+      cognition.signal_emitted, workflow.step_started
+    pattern: "^[a-z_]+\\.[a-z_]+$"
+
+  source:
+    type: object
+    required:
+      - service
+    properties:
+      service:
+        type: string
+        description: 发出事件的服务名
+      agent_id:
+        type: string
+        format: uuid
+        description: 触发事件的龙虾 ID（如适用）
+      user_id:
+        type: string
+        format: uuid
+        description: 触发事件的用户 ID（如适用）
+
+  timestamp:
+    type: string
+    format: date-time
+    description: 事件发生时间（ISO 8601）
+
+  correlation_id:
+    type: string
+    format: uuid
+    description: 关联 ID，用于追踪跨服务的事件链
+
+  causation_id:
+    type: string
+    format: uuid
+    description: 因果 ID，指向直接触发此事件的上一个事件
+
+  payload:
+    type: object
+    additionalProperties: true
+    description: 事件载荷，具体结构取决于 event_type
+
+  metadata:
+    type: object
+    properties:
+      schema_version:
+        type: string
+        default: "1.0"
+        description: 事件 schema 版本
+      retry_count:
+        type: integer
+        default: 0
+        description: 重试次数
+      ttl:
+        type: integer
+        description: 事件过期时间（秒）
+    additionalProperties: true
+
+# 预定义事件类型列表
+x-event-types:
+  task:
+    - task.created
+    - task.assigned
+    - task.started
+    - task.completed
+    - task.failed
+    - task.blocked
+    - task.human_required
+    - task.retried
+  agent:
+    - agent.registered
+    - agent.heartbeat
+    - agent.disconnected
+    - agent.capability_updated
+  workflow:
+    - workflow.started
+    - workflow.step_started
+    - workflow.step_completed
+    - workflow.completed
+    - workflow.failed
+    - workflow.paused
+  cognition:
+    - cognition.signal_emitted
+    - cognition.pattern_detected
+    - cognition.decision_required
+    - cognition.knowledge_updated
+  artifact:
+    - artifact.created
+    - artifact.updated
+    - artifact.archived
+  intent:
+    - intent.goal_created
+    - intent.graph_updated
+    - intent.decomposed

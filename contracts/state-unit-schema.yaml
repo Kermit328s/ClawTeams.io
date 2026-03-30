@@ -1,0 +1,159 @@
+---
+# 最小状态单元 JSON Schema
+# 定义：一个龙虾完成一次任务后必须留下什么，才能让下一个龙虾接得上
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://clawteams.io/schemas/state-unit.json"
+title: StateUnit
+description: >
+  最小状态单元。每个龙虾完成任务后产出的不可篡改记录，
+  包含结构化输出、档案引用、认知信号和上下游依赖关系。
+
+type: object
+required:
+  - task_id
+  - agent_id
+  - state
+  - result
+  - timestamp
+  - version
+
+properties:
+  task_id:
+    type: string
+    format: uuid
+    description: 任务唯一标识
+
+  agent_id:
+    type: string
+    format: uuid
+    description: 执行该任务的龙虾账号 ID
+
+  state:
+    type: string
+    enum:
+      - completed
+      - failed
+      - blocked
+      - human_required
+    description: 任务最终状态
+
+  result:
+    $ref: "#/$defs/StructuredResult"
+    description: 结构化输出（不接受纯文本）
+
+  artifact_ids:
+    type: array
+    items:
+      type: string
+      format: uuid
+    default: []
+    description: 产出档案 ID 列表
+
+  cognitive_signal:
+    $ref: "#/$defs/CognitiveSignal"
+    description: 是否触发认知层判断及信号内容
+
+  context_snapshot:
+    $ref: "#/$defs/ContextSnapshot"
+    description: 执行时的上下文快照引用
+
+  timestamp:
+    type: string
+    format: date-time
+    description: 完成时间（ISO 8601）
+
+  version:
+    type: integer
+    minimum: 1
+    description: 状态版本号，每次变更自增，支持回滚（回滚=移动指针，不删除历史）
+
+  upstream_task_ids:
+    type: array
+    items:
+      type: string
+      format: uuid
+    default: []
+    description: 上游依赖任务 ID 列表
+
+  downstream_task_ids:
+    type: array
+    items:
+      type: string
+      format: uuid
+    default: []
+    description: 下游待触发任务 ID 列表
+
+  metadata:
+    type: object
+    additionalProperties: true
+    description: 扩展元数据
+
+$defs:
+  StructuredResult:
+    type: object
+    required:
+      - type
+      - data
+    properties:
+      type:
+        type: string
+        enum:
+          - json
+          - table
+          - reference
+          - composite
+        description: 输出类型
+      data:
+        description: 结构化数据体，具体 schema 取决于 type
+      summary:
+        type: string
+        maxLength: 1000
+        description: 结果摘要（供人类和认知层快速理解）
+      quality_score:
+        type: number
+        minimum: 0
+        maximum: 1
+        description: 自评质量分（0-1）
+
+  CognitiveSignal:
+    type: object
+    required:
+      - triggered
+    properties:
+      triggered:
+        type: boolean
+        description: 是否触发认知层判断
+      signal_type:
+        type: string
+        enum:
+          - anomaly
+          - pattern_detected
+          - decision_required
+          - knowledge_update
+          - quality_alert
+        description: 信号类型
+      payload:
+        type: object
+        additionalProperties: true
+        description: 信号携带的数据
+
+  ContextSnapshot:
+    type: object
+    required:
+      - snapshot_id
+    properties:
+      snapshot_id:
+        type: string
+        format: uuid
+        description: 快照唯一标识
+      intent_graph_version:
+        type: integer
+        description: 执行时意图图谱的版本号
+      parent_goal_id:
+        type: string
+        format: uuid
+        description: 所属目标节点 ID
+      environment:
+        type: object
+        additionalProperties: true
+        description: 执行环境变量快照
