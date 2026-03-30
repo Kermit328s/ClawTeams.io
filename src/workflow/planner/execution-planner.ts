@@ -62,8 +62,11 @@ export function matchCapability(
 export function identifyParallelStages(dag: WorkflowDAG): string[][] {
   const adjacency = buildAdjacencyList(dag.nodes, dag.edges);
 
-  // 忽略 LOOP_BACK 边计算层级
-  const effectiveEdges = dag.edges.filter((e) => e.edge_type !== 'LOOP_BACK');
+  // 忽略 LOOP_BACK 和 PARALLEL_WITH 边计算层级
+  // PARALLEL_WITH 表示并行关系，不构成依赖
+  const effectiveEdges = dag.edges.filter(
+    (e) => e.edge_type !== 'LOOP_BACK' && e.edge_type !== 'PARALLEL_WITH',
+  );
   const inDegree = new Map<string, number>();
 
   for (const node of dag.nodes) {
@@ -91,7 +94,7 @@ export function identifyParallelStages(dag: WorkflowDAG): string[][] {
     for (const nodeId of currentLevel) {
       const neighbors = adjacency.get(nodeId) ?? [];
       for (const edge of neighbors) {
-        if (edge.edge_type === 'LOOP_BACK') continue;
+        if (edge.edge_type === 'LOOP_BACK' || edge.edge_type === 'PARALLEL_WITH') continue;
         if (visited.has(edge.to_id)) continue;
 
         const newDeg = (inDegree.get(edge.to_id) ?? 1) - 1;
