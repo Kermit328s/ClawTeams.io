@@ -63,7 +63,7 @@ describe('OutputHook', () => {
 
   it('should publish task.completed event for completed state', async () => {
     const received: ClawTeamsEvent[] = [];
-    await eventBus.subscribe('task.completed', async (e) => received.push(e));
+    await eventBus.subscribe('task.completed', async (e) => { received.push(e); });
 
     await outputHook.handleTaskReport({
       task_id: 'task-1',
@@ -77,7 +77,7 @@ describe('OutputHook', () => {
 
   it('should publish task.failed event for failed state', async () => {
     const received: ClawTeamsEvent[] = [];
-    await eventBus.subscribe('task.failed', async (e) => received.push(e));
+    await eventBus.subscribe('task.failed', async (e) => { received.push(e); });
 
     await outputHook.handleTaskReport({
       task_id: 'task-1',
@@ -91,7 +91,7 @@ describe('OutputHook', () => {
 
   it('should publish progress event for running state', async () => {
     const received: ClawTeamsEvent[] = [];
-    await eventBus.subscribe('task.started', async (e) => received.push(e));
+    await eventBus.subscribe('task.started', async (e) => { received.push(e); });
 
     await outputHook.handleTaskReport({
       task_id: 'task-1',

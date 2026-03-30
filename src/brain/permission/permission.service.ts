@@ -322,7 +322,7 @@ export class PermissionService {
     resourceId: string,
     action: Action,
   ): boolean {
-    const typeMatch = perm.resource_type === '*' || perm.resource_type === resourceType;
+    const typeMatch = (perm.resource_type as string) === '*' || perm.resource_type === resourceType;
     const idMatch = perm.resource_id === '*' || perm.resource_id === resourceId;
     const actionMatch = perm.actions.includes(action) || perm.actions.includes('admin' as Action);
     return typeMatch && idMatch && actionMatch;

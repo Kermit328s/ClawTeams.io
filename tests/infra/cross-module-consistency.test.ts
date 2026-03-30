@@ -40,7 +40,7 @@ import { InMemoryEventStore } from '../../src/connector/eventbus/in-memory-event
 
 // ── SDK imports ──
 import type {
-  ClawEvent,
+  ClawTeamsEvent as SDKClawTeamsEvent,
   AgentCapability as SDKAgentCapability,
   AgentRuntime as SDKAgentRuntime,
   AgentHeartbeatStatus as SDKAgentHeartbeatStatus,
@@ -290,10 +290,10 @@ describe('Cross-Module Type Consistency', () => {
       expect(Object.keys(sdkCap).sort()).toEqual(Object.keys(sharedCap).sort());
     });
 
-    it('ISSUE: claw-sdk ClawEvent vs infra ClawTeamsEvent naming inconsistency', () => {
-      // SDK names it ClawEvent, infra names it ClawTeamsEvent
-      // Same structure, different name
-      const sdkEvent: ClawEvent = {
+    it('claw-sdk and infra ClawTeamsEvent naming consistency', () => {
+      // Both SDK and infra now use ClawTeamsEvent
+      // Same structure, same name
+      const sdkEvent: SDKClawTeamsEvent = {
         event_id: 'e1',
         event_type: 'task.completed',
         source: { service: 'test' },

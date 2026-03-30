@@ -16,6 +16,7 @@ import os from 'os';
 import type {
   ClawSDKConfig,
   ConnectionState,
+  MessageType,
   MessageFrame,
   AgentCapability,
   AgentRuntime,
@@ -445,7 +446,7 @@ export class ClawClient {
 
   private createFrame<T>(msgType: string, payload: T): MessageFrame<T> {
     return {
-      msg_type: msgType,
+      msg_type: msgType as MessageType,
       msg_id: randomUUID(),
       timestamp: new Date().toISOString(),
       payload,

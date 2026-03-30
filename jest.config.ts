@@ -5,6 +5,7 @@ const config: Config = {
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
+  testPathIgnorePatterns: ['/node_modules/', 'tests/frontend/'],
   moduleNameMapper: {
     '^@infra/(.*)$': '<rootDir>/src/infra/$1',
     '^@brain/(.*)$': '<rootDir>/src/brain/$1',

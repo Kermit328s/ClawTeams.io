@@ -28,12 +28,12 @@ import type {
 
 describe('Intent-to-Execution Full Pipeline', () => {
   // Shared state across test steps
-  let teamId: string;
-  let goalId: string;
-  let workflowId: string;
-  let taskId: string;
-  let agentId: string;
-  let capturedEvents: ClawTeamsEvent[];
+  let teamId = '';
+  let goalId = '';
+  let workflowId = '';
+  let taskId = '';
+  let agentId = '';
+  let capturedEvents: ClawTeamsEvent[] = [];
 
   beforeAll(async () => {
     // TODO: Boot up test infrastructure

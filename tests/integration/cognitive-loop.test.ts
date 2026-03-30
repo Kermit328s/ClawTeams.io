@@ -22,12 +22,12 @@ import type {
 } from '@shared/index';
 
 describe('Cognitive Feedback Loop', () => {
-  let teamId: string;
-  let goalId: string;
-  let workflowId: string;
-  let taskIds: string[];
-  let agentId: string;
-  let capturedEvents: ClawTeamsEvent[];
+  let teamId = '';
+  let goalId = '';
+  let workflowId = '';
+  let taskIds: string[] = [];
+  let agentId = '';
+  let capturedEvents: ClawTeamsEvent[] = [];
 
   beforeAll(async () => {
     // TODO: Boot up test infrastructure

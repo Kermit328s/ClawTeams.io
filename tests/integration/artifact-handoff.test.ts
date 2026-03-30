@@ -19,15 +19,15 @@ import type {
 } from '@shared/index';
 
 describe('Artifact Handoff Pipeline', () => {
-  let teamId: string;
-  let goalId: string;
-  let workflowId: string;
-  let taskAId: string;  // upstream task (producer)
-  let taskBId: string;  // downstream task (consumer)
-  let agentAId: string; // lobster executing task A
-  let agentBId: string; // lobster executing task B
-  let artifactId: string;
-  let capturedEvents: ClawTeamsEvent[];
+  let teamId = '';
+  let goalId = '';
+  let workflowId = '';
+  let taskAId = '';  // upstream task (producer)
+  let taskBId = '';  // downstream task (consumer)
+  let agentAId = ''; // lobster executing task A
+  let agentBId = ''; // lobster executing task B
+  let artifactId = '';
+  let capturedEvents: ClawTeamsEvent[] = [];
 
   beforeAll(async () => {
     // TODO: Boot up test infrastructure
