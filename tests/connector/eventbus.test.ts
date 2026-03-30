@@ -2,7 +2,7 @@
  * 事件总线单元测试
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { EventBusImpl } from '../../src/connector/eventbus/event-bus';
 import { InMemoryEventStore } from '../../src/connector/eventbus/in-memory-event-store';
 import type { ClawTeamsEvent } from '../../src/infra/shared';

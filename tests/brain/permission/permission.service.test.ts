@@ -168,7 +168,9 @@ describe('PermissionService', () => {
       expect(derived.scope_permissions[0].actions).toContain('delete');
 
       expect(derived.lower_layer_permissions).toHaveLength(2);
-      expect(derived.lower_layer_permissions[0].actions).toContain('admin' as any);
+      expect(derived.lower_layer_permissions[0].actions).toEqual(
+        expect.arrayContaining(['create', 'read', 'update', 'delete', 'execute', 'assign']),
+      );
 
       expect(derived.upper_layer_permissions).toHaveLength(1);
       expect(derived.upper_layer_permissions[0].actions).toEqual(['read']);

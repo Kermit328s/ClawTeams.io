@@ -2,7 +2,7 @@
  * 适配器单元测试
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+
 import { OutputHook } from '../../src/connector/adapter/output-hook';
 import { ContextInjector } from '../../src/connector/adapter/context-injector';
 import { EventSubscriber } from '../../src/connector/adapter/event-subscriber';
@@ -19,7 +19,7 @@ describe('OutputHook', () => {
 
   beforeEach(() => {
     eventBus = new EventBusImpl();
-    mockWriter = { writeStateUnit: vi.fn().mockResolvedValue(undefined) };
+    mockWriter = { writeStateUnit: jest.fn().mockResolvedValue(undefined) };
     outputHook = new OutputHook({ eventBus, brainWriter: mockWriter });
   });
 
@@ -107,14 +107,14 @@ describe('OutputHook', () => {
 describe('ContextInjector', () => {
   it('should enrich task with context from brain', async () => {
     const mockReader: BrainReader = {
-      getTaskContext: vi.fn().mockResolvedValue({
+      getTaskContext: jest.fn().mockResolvedValue({
         goal_id: 'goal-1',
         workflow_id: 'wf-1',
         team_id: 'team-1',
         intent_graph_version: 1,
         dag_position: { depth: 0, parallel_count: 1, is_leaf: true },
       }),
-      getUpstreamStateUnits: vi.fn().mockResolvedValue([
+      getUpstreamStateUnits: jest.fn().mockResolvedValue([
         {
           task_id: 'upstream-1',
           agent_id: 'agent-0',
@@ -127,7 +127,7 @@ describe('ContextInjector', () => {
           downstream_task_ids: [],
         },
       ]),
-      getTeamContext: vi.fn().mockResolvedValue({ shared_key: 'shared_value' }),
+      getTeamContext: jest.fn().mockResolvedValue({ shared_key: 'shared_value' }),
     };
 
     const injector = new ContextInjector({ brainReader: mockReader });

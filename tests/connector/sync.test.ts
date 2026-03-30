@@ -2,7 +2,7 @@
  * 状态同步模块单元测试
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { OfflineQueue } from '../../src/connector/sync/offline-queue';
 import { AgentStateTracker } from '../../src/connector/sync/agent-state-tracker';
 import type { MessageFrame } from '../../src/connector/types';

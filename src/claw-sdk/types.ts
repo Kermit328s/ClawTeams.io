@@ -3,9 +3,22 @@
  * 龙虾端 SDK 使用的所有类型
  */
 
+// ─── 消息类型（与服务端协议一致） ───
+export type MessageType =
+  | 'agent.register'
+  | 'agent.register_ack'
+  | 'agent.heartbeat'
+  | 'agent.heartbeat_ack'
+  | 'task.assign'
+  | 'task.report'
+  | 'event.subscribe'
+  | 'event.subscribe_ack'
+  | 'event.push'
+  | 'error';
+
 // ─── 消息帧（与服务端协议一致） ───
 export interface MessageFrame<T = unknown> {
-  msg_type: string;
+  msg_type: MessageType;
   msg_id: string;
   timestamp: string;
   reply_to?: string;
@@ -60,7 +73,7 @@ export interface TaskAssignment {
 }
 
 // ─── 事件结构 ───
-export interface ClawEvent {
+export interface ClawTeamsEvent {
   event_id: string;
   event_type: string;
   source: {
@@ -109,5 +122,5 @@ export type ConnectionState =
 
 // ─── 事件回调类型 ───
 export type TaskHandler = (task: TaskAssignment) => Promise<void>;
-export type EventHandler = (event: ClawEvent) => Promise<void>;
+export type EventHandler = (event: ClawTeamsEvent) => Promise<void>;
 export type StateChangeHandler = (state: ConnectionState) => void;

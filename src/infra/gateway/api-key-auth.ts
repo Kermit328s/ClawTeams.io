@@ -117,8 +117,21 @@ function cleanupCache(): void {
   }
 }
 
-// 定期清理缓存
-setInterval(cleanupCache, CACHE_TTL_MS);
+// 惰性初始化的缓存清理定时器
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startCacheCleanup(): void {
+  if (!cleanupTimer) {
+    cleanupTimer = setInterval(cleanupCache, CACHE_TTL_MS);
+  }
+}
+
+export function stopCacheCleanup(): void {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
+}
 
 // ─── Fastify API Key 鉴权 Hook ───
 export function apiKeyAuthHook(pgConnectionString: string) {

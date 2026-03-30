@@ -23,11 +23,40 @@ import type {
   AgentResourceUsage,
   TaskReportState,
   TaskAssignment,
-  ClawEvent,
+  ClawTeamsEvent,
   TaskHandler,
   EventHandler,
   StateChangeHandler,
 } from './types';
+
+// ─── 内部 payload 类型（消除 as any） ───
+interface RegisterAckPayload {
+  success: boolean;
+  session_id: string;
+  error?: string;
+}
+
+interface SubscribeAckPayload {
+  subscribed_patterns: string[];
+}
+
+interface TaskAssignPayload {
+  task_id: string;
+  task_type: string;
+  input: Record<string, unknown>;
+  priority?: 'critical' | 'high' | 'medium' | 'low';
+  deadline: string;
+  context?: Record<string, unknown>;
+}
+
+interface EventPushPayload {
+  event: ClawTeamsEvent;
+}
+
+interface ErrorPayload {
+  code: string;
+  message: string;
+}
 
 export class ClawClient {
   private ws: WebSocket | null = null;
@@ -129,7 +158,7 @@ export class ClawClient {
     });
 
     const response = await this.sendAndWait(frame, 10_000);
-    return (response.payload as any).subscribed_patterns ?? patterns;
+    return (response.payload as SubscribeAckPayload).subscribed_patterns ?? patterns;
   }
 
   /**
@@ -250,7 +279,7 @@ export class ClawClient {
     });
 
     const response = await this.sendAndWait(frame, 10_000);
-    const payload = response.payload as any;
+    const payload = response.payload as RegisterAckPayload;
 
     if (!payload.success) {
       throw new Error(`Registration failed: ${payload.error ?? 'Unknown error'}`);
@@ -340,7 +369,7 @@ export class ClawClient {
   private async handleTaskAssign(frame: MessageFrame): Promise<void> {
     if (!this.taskHandler) return;
 
-    const payload = frame.payload as any;
+    const payload = frame.payload as TaskAssignPayload;
     const task: TaskAssignment = {
       task_id: payload.task_id,
       task_type: payload.task_type,
@@ -367,8 +396,8 @@ export class ClawClient {
   }
 
   private async handleEventPush(frame: MessageFrame): Promise<void> {
-    const payload = frame.payload as any;
-    const event: ClawEvent = payload.event;
+    const payload = frame.payload as EventPushPayload;
+    const event: ClawTeamsEvent = payload.event;
     if (!event) return;
 
     for (const [pattern, handlers] of this.eventHandlers) {
@@ -385,7 +414,7 @@ export class ClawClient {
   }
 
   private handleError(frame: MessageFrame): void {
-    const payload = frame.payload as any;
+    const payload = frame.payload as ErrorPayload;
     if (payload.code === 'SESSION_EXPIRED') {
       // 会话过期，需要重新注册
       this.sessionId = null;

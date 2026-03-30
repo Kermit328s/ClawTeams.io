@@ -7,7 +7,7 @@ import type { Pool } from 'pg';
 import type { Session as Neo4jSession } from 'neo4j-driver';
 
 export interface Team {
-  id: string;
+  team_id: string;
   name: string;
   description?: string;
   owner_id: string;
@@ -47,7 +47,7 @@ export class TeamService {
     // 自动将 owner 加入 team_members
     await this.pg.query(
       `INSERT INTO team_members (team_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [team.id, req.owner_id],
+      [team.team_id, req.owner_id],
     );
 
     // 在 Neo4j 中创建 Team 节点和 OWNS 关系
@@ -57,7 +57,7 @@ export class TeamService {
        WITH t
        MATCH (u:User {id: $owner_id})
        MERGE (u)-[:OWNS]->(t)`,
-      { id: team.id, name: req.name, description: req.description ?? '', owner_id: req.owner_id },
+      { id: team.team_id, name: req.name, description: req.description ?? '', owner_id: req.owner_id },
     );
 
     return team;
@@ -116,7 +116,7 @@ export class TeamService {
 
   private mapRow(row: Record<string, unknown>): Team {
     return {
-      id: row.id as string,
+      team_id: row.id as string,
       name: row.name as string,
       description: row.description as string | undefined,
       owner_id: row.owner_id as string,

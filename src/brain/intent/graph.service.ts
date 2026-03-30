@@ -46,6 +46,26 @@ export interface CreateEdgeRequest {
   metadata?: Record<string, unknown>;
 }
 
+// ─── 允许的边类型白名单 ───
+const ALLOWED_EDGE_TYPES: ReadonlySet<string> = new Set<IntentEdgeType>([
+  'DEPENDS_ON',
+  'PARALLEL_WITH',
+  'CONDITION',
+  'AGGREGATES',
+  'LOOP_BACK',
+  'BELONGS_TO',
+  'OWNS',
+  'RESPONSIBLE_FOR',
+  'RELATES_TO',
+  'EVOLVED_FROM',
+]);
+
+function validateEdgeType(edgeType: string): asserts edgeType is IntentEdgeType {
+  if (!ALLOWED_EDGE_TYPES.has(edgeType)) {
+    throw new Error(`Invalid edge type: ${edgeType}. Allowed types: ${[...ALLOWED_EDGE_TYPES].join(', ')}`);
+  }
+}
+
 // ─── 意图图谱服务 ───
 export class IntentGraphService {
   constructor(private readonly neo4j: Neo4jSession) {}
@@ -211,6 +231,7 @@ export class IntentGraphService {
 
   /** 创建边 */
   async createEdge(req: CreateEdgeRequest): Promise<GraphEdge> {
+    validateEdgeType(req.edge_type);
     const result = await this.neo4j.run(
       `MATCH (a {id: $from_id}), (b {id: $to_id})
        CREATE (a)-[r:${req.edge_type} {
@@ -243,6 +264,7 @@ export class IntentGraphService {
 
   /** 删除边 */
   async deleteEdge(fromId: string, toId: string, edgeType: IntentEdgeType): Promise<boolean> {
+    validateEdgeType(edgeType);
     const result = await this.neo4j.run(
       `MATCH (a {id: $from_id})-[r:${edgeType}]->(b {id: $to_id})
        DELETE r

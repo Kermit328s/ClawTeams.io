@@ -74,11 +74,23 @@ export class EventBusImpl implements IEventBus {
   }
 
   /**
-   * 订阅事件
+   * 订阅事件（接口兼容重载）
+   */
+  async subscribe(
+    pattern: string,
+    handler: EventHandler,
+  ): Promise<{ unsubscribe: () => void }>;
+  /**
+   * 订阅事件（扩展：支持 team_id 过滤）
    * @param pattern 事件类型模式，支持通配符（如 "task.*"）
    * @param handler 事件处理函数
    * @param teamId 可选的 team_id 过滤
    */
+  async subscribe(
+    pattern: string,
+    handler: EventHandler,
+    teamId?: string,
+  ): Promise<{ unsubscribe: () => void }>;
   async subscribe(
     pattern: string,
     handler: EventHandler,

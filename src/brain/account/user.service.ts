@@ -152,8 +152,8 @@ export class UserService {
 
     await this.pg.query(
       `INSERT INTO user_sessions (user_id, refresh_token_hash, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '${this.refreshTokenTtl} seconds')`,
-      [user.id, refreshTokenHash],
+       VALUES ($1, $2, NOW() + make_interval(secs => $3))`,
+      [user.id, refreshTokenHash, this.refreshTokenTtl],
     );
 
     return {

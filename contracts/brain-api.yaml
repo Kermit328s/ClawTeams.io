@@ -322,7 +322,7 @@ components:
 
     CreateGoalRequest:
       type: object
-      required: [title, team_id]
+      required: [title, team_id, layer]
       properties:
         title:
           type: string
@@ -339,6 +339,14 @@ components:
         deadline:
           type: string
           format: date-time
+        layer:
+          type: string
+          enum: [vision, strategy, phase_plan, action_item]
+          description: 意图层级
+        parent_id:
+          type: string
+          format: uuid
+          description: 上级目标 ID（可选）
 
     Goal:
       type: object

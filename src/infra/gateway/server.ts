@@ -119,7 +119,7 @@ export async function createGateway(config: GatewayConfig): Promise<FastifyInsta
   // ─── 全局错误处理 ───
   app.setErrorHandler(
     async (error: Error & { statusCode?: number }, _request: FastifyRequest, reply: FastifyReply) => {
-      const statusCode = (error as { statusCode?: number }).statusCode ?? 500;
+      const statusCode = error.statusCode ?? 500;
 
       app.log.error({ err: error }, 'Request error');
 

@@ -4,7 +4,7 @@
  */
 
 import type { FastifyRequest, FastifyReply, HookHandlerDoneFunction } from 'fastify';
-import { createVerify } from 'crypto';
+import { createHmac } from 'crypto';
 import type { AuthContext } from './server';
 
 // ─── JWT Header ───
@@ -44,7 +44,6 @@ function verifyHmacSha256(
   signature: string,
   secret: string,
 ): boolean {
-  const { createHmac } = require('crypto');
   const data = `${headerB64}.${payloadB64}`;
   const expectedSig = createHmac('sha256', secret)
     .update(data)
@@ -105,8 +104,6 @@ export function signJwt(
   payload: Omit<JwtPayload, 'iat'>,
   secret: string,
 ): string {
-  const { createHmac } = require('crypto');
-
   const header: JwtHeader = { alg: 'HS256', typ: 'JWT' };
 
   const fullPayload: JwtPayload = {

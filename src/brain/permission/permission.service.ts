@@ -79,6 +79,15 @@ export interface PermissionCheckOptions {
   target_layer?: IntentLayer;
 }
 
+// ─── Neo4j label 白名单 ───
+const ALLOWED_NEO4J_LABELS: ReadonlySet<string> = new Set(['User', 'Agent']);
+
+function validateNeo4jLabel(label: string): void {
+  if (!ALLOWED_NEO4J_LABELS.has(label)) {
+    throw new Error(`Invalid Neo4j label: ${label}. Allowed labels: ${[...ALLOWED_NEO4J_LABELS].join(', ')}`);
+  }
+}
+
 // ─── 权限服务 ───
 export class PermissionService {
   private layerLocks: LayerLockConfig[];
@@ -160,6 +169,7 @@ export class PermissionService {
 
     // 查找负责的目标节点
     const label = subjectType === 'user' ? 'User' : 'Agent';
+    validateNeo4jLabel(label);
     const responsibleResult = await this.neo4j.run(
       `MATCH (s:${label} {id: $id})-[:RESPONSIBLE_FOR]->(g:Goal)
        RETURN g.id AS goal_id, g.layer AS layer, g.team_id AS team_id`,

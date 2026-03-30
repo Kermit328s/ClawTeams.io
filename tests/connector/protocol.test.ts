@@ -3,7 +3,7 @@
  * 测试 ConnectionManager 的注册、心跳、连接管理逻辑
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+
 import { EventEmitter } from 'events';
 import { ConnectionManager } from '../../src/connector/protocol/connection-manager';
 import { createFrame, serializeFrame } from '../../src/connector/utils';
@@ -18,12 +18,12 @@ function createMockWs() {
   const sent: string[] = [];
   return {
     readyState: 1, // OPEN
-    send: vi.fn((data: string) => sent.push(data)),
-    close: vi.fn(),
+    send: jest.fn((data: string) => sent.push(data)),
+    close: jest.fn(),
     _sent: sent,
-    on: vi.fn(),
-    once: vi.fn(),
-    removeListener: vi.fn(),
+    on: jest.fn(),
+    once: jest.fn(),
+    removeListener: jest.fn(),
   } as any;
 }
 
