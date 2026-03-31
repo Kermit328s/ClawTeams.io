@@ -668,6 +668,798 @@ cp -r clawteams-plugin/ ~/.openclaw/extensions/clawteams/
 
 ---
 
+---
+
+# Part II: OpenClaw 运行时深度分析
+
+---
+
+## 11. 启动流程（完整链路）
+
+### 入口：`src/entry.ts`
+
+```
+src/entry.ts
+  ├─ 环境初始化（进程标题、编译缓存、环境变量规范化）
+  ├─ CLI 重生成检查（容器/版本）
+  ├─ 版本快速路径（--version）
+  └─ runMainOrRootHelp() → 异步导入 CLI 运行器
+```
+
+### Gateway 启动：`src/gateway/server.impl.ts`
+
+```
+startGatewayServer(port, options)
+  ├─ 配置加载和验证（readConfigFileSnapshot + migrateLegacyConfig）
+  ├─ 秘密系统初始化（activateRuntimeSecrets）
+  ├─ 插件加载
+  │   ├─ loadGatewayStartupPlugins() — 立即加载
+  │   └─ reloadDeferredGatewayPlugins() — 延迟加载
+  ├─ 全局 Hook 运行器初始化（initializeGlobalHookRunner）
+  ├─ WebSocket 服务器启动
+  ├─ 通道管理器创建
+  ├─ 会话事件订阅者注册
+  ├─ Subagent 注册表初始化
+  ├─ Lane 并发控制设置（applyGatewayLaneConcurrency）
+  ├─ Boot 脚本执行（runBootOnce → BOOT.md）
+  └─ 侧车启动（Cron、发现、任务注册表维护）
+```
+
+**ClawTeams 适配意义**：`gateway_start` Hook 在这个流程的末尾触发，是注册龙虾的最佳时机。
+
+### 插件加载时序
+
+```
+1. loadGatewayStartupPlugins()     — Gateway 启动前
+2. initializeGlobalHookRunner()    — Hook 系统初始化
+3. reloadDeferredGatewayPlugins()  — Gateway 启动后
+4. ensureRuntimePluginsLoaded()    — Agent 执行前（按需）
+```
+
+ClawTeams Plugin 应在**阶段 1（启动时加载）**注册，确保所有 Hook 在第一个 Agent 执行前就位。
+
+---
+
+## 12. 消息处理完整链路
+
+### 一条消息从接收到响应的完整路径
+
+```
+用户消息
+  ↓
+WebSocket 连接 (src/gateway/server/ws-connection.ts)
+  ├─ JSON 解析 → 消息类型验证 → 原点检查
+  ├─ 认证验证（签名校验 + 速率限制）
+  └─ 预认证预算检查
+  ↓
+Gateway 方法路由 (src/gateway/server-methods/)
+  └─ 匹配 "chat.send" 方法
+  ↓
+通道接收 (src/channels/)
+  ├─ 消息规范化
+  ├─ 命令门控 / 提及门控检查
+  └─ 触发 onSessionTranscriptUpdate 事件
+  ↓
+命令队列入队 (src/process/command-queue.ts)
+  ├─ 选择 Session Lane（每个会话独立 Lane）
+  ├─ 入队到 QueueEntry
+  └─ Lane 泵触发处理
+  ↓
+runEmbeddedPiAgent (src/agents/pi-embedded-runner/run.ts)
+  ├─ 加载会话（JSONL 文件）
+  ├─ 获取会话写锁
+  ├─ Hook: before_model_resolve  ← 🎯 ClawTeams 捕获任务开始
+  ├─ 模型和鉴权解析
+  ├─ Hook: before_prompt_build   ← 🎯 ClawTeams 注入上下文
+  └─ runEmbeddedAttempt 循环
+      ├─ 构建消息载荷
+      ├─ LLM 流式调用
+      ├─ Tool Use 循环
+      │   ├─ Hook: before_tool_call  ← 🎯 ClawTeams 记录工具调用
+      │   ├─ 工具执行
+      │   └─ Hook: after_tool_call   ← 🎯 ClawTeams 记录工具结果
+      ├─ 压缩检查（超过 token 限制 → compact）
+      └─ 持久化会话（写入 JSONL + 释放锁）
+  ↓
+  Hook: agent_end  ← 🎯 ClawTeams 捕获任务完成 + 产出
+  ↓
+响应流式传输
+  ├─ chat.stream 事件（增量）
+  ├─ chat.tool_use 事件
+  └─ chat.end 事件
+  ↓
+任务系统更新 + 记忆系统刷新
+```
+
+### ClawTeams 的 6 个拦截点标记在链路中
+
+上图中 🎯 标记的位置就是 ClawTeams Plugin 需要挂 Hook 的地方。
+
+---
+
+## 13. Agent 执行循环详解
+
+### runEmbeddedPiAgent 核心流程
+
+**文件**: `src/agents/pi-embedded-runner/run.ts`（1400+ 行）
+
+```
+runEmbeddedPiAgent(params)
+  │
+  ├─ 1. Lane 解析（行 100-105）
+  │   ├─ 从 sessionKey 派生 Session Lane
+  │   └─ 从 params.lane 派生 Global Lane
+  │   → 两层入队保证会话级串行 + 全局级并发控制
+  │
+  ├─ 2. 工作空间解析（行 119-134）
+  │   └─ 解析或继承工作空间目录
+  │
+  ├─ 3. 模型/Provider 解析（行 140-148）
+  │   └─ 默认模型 → 配置覆盖 → Hook 覆盖
+  │
+  ├─ 4. 认证初始化（行 182-220）
+  │   └─ 创建 Auth Controller，解析 profile 顺序
+  │
+  ├─ 5. 会话初始化（行 222-280）
+  │   ├─ 加载 JSONL 会话历史
+  │   └─ 压缩检查（token 超限 → 触发 compact）
+  │
+  └─ 6. 重试循环（行 282-540）
+      │
+      for (attempt = 0; attempt < maxRetry; attempt++) {
+        │
+        ├─ 运行 Attempt
+        │   ├─ 构建消息载荷
+        │   ├─ LLM 流式调用
+        │   │
+        │   ├─ Tool Use 循环
+        │   │   while (hasToolUse) {
+        │   │     extractToolUse(message)
+        │   │     → executeTool(toolUse)  // 通过 Lane 入队
+        │   │     → session.addToolResult()
+        │   │     → model.complete() 继续
+        │   │   }
+        │   │
+        │   └─ 返回 result
+        │
+        ├─ 成功 → 保存会话，返回
+        │
+        └─ 失败 → 故障分类
+            ├─ isAuthError → 标记失败 profile，重试
+            ├─ isRateLimit → 指数退避，重试
+            ├─ isContextOverflow → 压缩会话，重试
+            └─ 其他 → 最终失败
+      }
+```
+
+### 重试策略
+
+```
+初始延迟: 100ms
+最大延迟: 32s
+增长因子: 2x
+最大重试: 可配置（resolveMaxRunRetryIterations）
+```
+
+### 会话压缩触发
+
+```
+压缩触发条件:
+  - 上下文 token 超过模型限制
+  - 会话历史行数过大
+  - 显式压缩请求
+
+压缩流程 (src/agents/pi-embedded-runner/compact.ts):
+  1. 获取会话写锁
+  2. Hook: before_compaction
+  3. 调用 compactWithSafetyTimeout()
+  4. 截断过大的工具结果
+  5. Hook: after_compaction
+  6. 写入会话文件
+  7. 释放写锁
+```
+
+---
+
+## 14. Subagent 运行时行为
+
+### 生成过程：`src/agents/subagent-spawn.ts`
+
+**Subagent 参数**:
+```typescript
+{
+  task: string;              // 子任务描述
+  agentId?: string;          // 指定 Agent
+  model?: string;            // 模型覆盖
+  runTimeoutSeconds?: number; // 超时
+  mode?: "run" | "session";  // 执行模式
+  cleanup?: "delete" | "keep"; // 会话清理策略
+  sandbox?: "inherit" | "require"; // 沙箱模式
+  attachments?: Array<{name, content, encoding, mimeType}>;
+}
+```
+
+**生成链路**:
+```
+父 Agent 调用 subagent.spawn 工具
+  ├─ 能力检查（是否允许生成）
+  ├─ 会话密钥生成（新的 childSessionKey）
+  ├─ 工作空间继承（inherit 或 create）
+  ├─ 模型选择（显式 或 继承父模型）
+  ├─ 系统提示构建（Subagent 专属公告 + 任务描述）
+  ├─ 附件物化（解码 Base64 → 写入子工作空间）
+  ├─ Hook: subagent_spawning  ← 🎯 ClawTeams 记录
+  ├─ 通过 Gateway API 调用 chat.send（创建子 Agent 运行）
+  ├─ 注册到 Subagent 注册表
+  └─ Hook: subagent_spawned   ← 🎯 ClawTeams 记录
+```
+
+### 子 Agent 结果回传
+
+```
+子 Agent 完成
+  ├─ Hook: subagent_ended     ← 🎯 ClawTeams 记录
+  ├─ 发出完成事件（AgentTaskCompletionInternalEvent）
+  ├─ 父 Agent 通过会话订阅接收完成消息
+  └─ 完成消息作为用户消息注入父 Agent 会话
+```
+
+### Subagent 与 ClawTeams 工作流的映射
+
+```
+Subagent 生成 = 工作流中的一条新边（父→子）
+Subagent 完成 = 子节点状态更新
+Subagent 超时/取消 = 子节点状态变为失败
+
+ClawTeams 工作流图自动添加：
+  [父 Agent 任务 node] ──spawned──→ [子 Agent 任务 node]
+```
+
+---
+
+## 15. 任务系统运行时
+
+### TaskRegistry：`src/tasks/task-registry.ts`（1400+ 行）
+
+**数据结构**:
+```typescript
+type TaskRecord = {
+  taskId: string;
+  runtime: "subagent" | "acp" | "cli" | "cron";
+  requesterSessionKey: string;
+  childSessionKey?: string;
+  parentTaskId?: string;
+  agentId?: string;
+  runId?: string;
+  label?: string;
+  task: string;
+  status: TaskStatus;
+  deliveryStatus: TaskDeliveryStatus;
+  notifyPolicy: TaskNotifyPolicy;
+  createdAt: number;
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+  progressSummary?: string;
+  terminalSummary?: string;
+};
+
+// 状态枚举
+TaskStatus: "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "lost"
+DeliveryStatus: "pending" | "delivered" | "session_queued" | "failed" | "parent_missing" | "not_applicable"
+NotifyPolicy: "done_only" | "state_changes" | "silent"
+```
+
+**内存 + SQLite 双存储**:
+```
+Map<taskId, TaskRecord> (内存，快速查询)
+  ↕ 同步
+SQLite task-registry.store.sqlite (持久化)
+```
+
+**ClawTeams 适配意义**: TaskRegistry 是 OpenClaw 内部的任务追踪系统。ClawTeams 不直接读取它，而是通过 Hook 事件获取相同的信息。但了解它的状态机有助于正确映射任务状态。
+
+### 任务状态转换图
+
+```
+queued → running → succeeded
+                 → failed
+                 → timed_out
+                 → cancelled
+       → lost（异常情况）
+```
+
+---
+
+## 16. 进程和并发模型
+
+### 单进程 + Lane 队列
+
+OpenClaw 是**单进程应用**，并发通过 Node.js 事件循环 + Lane 队列实现。
+
+**Lane 模型**:
+```
+Session Lane: 每个会话独立队列，并发=1（串行处理）
+Global Lane:  全局共享队列，可配置并发
+Cron Lane:    定时任务队列，并发=4
+Subagent Lane: 子 Agent 队列
+```
+
+**泵机制**（command-queue.ts）:
+```typescript
+while (activeTaskIds.size < maxConcurrent && queue.length > 0) {
+  entry = queue.shift();
+  activeTaskIds.add(taskId);
+  entry.task().then(result => {
+    activeTaskIds.delete(taskId);
+    pump(); // 递归处理下一个
+    entry.resolve(result);
+  });
+}
+```
+
+**ClawTeams 适配意义**: Hook 执行也在这个事件循环中。ClawTeams Plugin 的 Hook 必须**快速返回**（异步 fire-and-forget），否则会阻塞 Agent 执行。
+
+---
+
+## 17. 持久化存储全景
+
+### 存储层一览
+
+| 存储 | 技术 | 内容 | 文件位置 |
+|------|------|------|---------|
+| 会话历史 | JSONL 文件 | 消息、工具调用、元数据 | `~/.openclaw/sessions/<agentId>/<sessionKey>.jsonl` |
+| 任务注册表 | SQLite | 任务状态、通知、交付 | `~/.openclaw/task-registry.db` |
+| 配置 | JSON/YAML | Agent、通道、模型、插件配置 | `~/.openclaw/openclaw.json` |
+| 认证 | JSON | API Key、Profile | `~/.openclaw/auth-profiles.json` |
+| 记忆 | LanceDB | 向量嵌入 + 元数据 | `~/.openclaw/memory/` |
+| 锁 | 文件锁 | 会话写锁 | `<sessionFile>.lock` |
+
+### 会话 JSONL 格式
+
+```jsonl
+{"sessionId":"uuid","updatedAt":1234567890,"spawnedBy":"parent-key","spawnDepth":0}
+{"type":"message","role":"user","content":"帮我做市场调研"}
+{"type":"message","role":"assistant","content":"好的，我来...","toolUse":[{"id":"tu_1","name":"web_search","input":{"query":"..."}}]}
+{"type":"tool_result","toolUseId":"tu_1","content":"搜索结果..."}
+{"type":"message","role":"assistant","content":"根据调研结果..."}
+```
+
+### 写锁机制
+
+```
+获取锁: fs.open(lockPath, "wx") — 独占创建
+锁内容: { pid, createdAt, starttime }
+锁验证: 检查 PID 是否活跃
+过期: staleMs=30分钟 自动回收
+重入: 同一进程可重入，计数器跟踪
+Watchdog: 每 60 秒检查，释放超时锁
+```
+
+---
+
+## 18. Hook 运行时行为
+
+### 执行机制：`src/plugins/hook-runner-global.ts`
+
+```typescript
+// 初始化
+initializeGlobalHookRunner(registry) {
+  hookRunner = createHookRunner(registry, {
+    logger,
+    catchErrors: true  // 关键：单个 Hook 失败不破坏执行
+  });
+}
+
+// 调用
+const result = await hookRunner.runHook("before_model_resolve", event, context);
+```
+
+### Hook 调用时序（在 Agent 执行中）
+
+```
+runEmbeddedPiAgent()
+  ├─ before_model_resolve ──── Hook #1（可覆盖 model/provider）
+  ├─ before_prompt_build ───── Hook #2（可注入上下文）
+  │
+  └─ runEmbeddedAttempt()
+      ├─ llm_input ─────────── Hook #3（LLM 调用前）
+      ├─ before_tool_call ──── Hook #4（每次工具调用前）
+      ├─ after_tool_call ───── Hook #5（每次工具调用后）
+      ├─ llm_output ────────── Hook #6（LLM 响应后）
+      └─ agent_end ─────────── Hook #7（Agent 执行完成）
+```
+
+### Hook 返回值影响
+
+```typescript
+// before_model_resolve 返回值
+{ model?: string, provider?: string } // 覆盖模型选择
+
+// before_prompt_build 返回值
+{ prependContext?: string, appendSystemContext?: string } // 修改提示词
+
+// before_tool_call 返回值
+{ skip?: boolean, result?: unknown } // 跳过工具或替代结果
+
+// agent_end 返回值
+{} // 无返回值，仅用于记录和通知
+```
+
+### 错误处理
+
+```
+catchErrors: true 模式下：
+  - Hook 抛出异常 → 记录警告 → 继续执行后续 Hook
+  - 不影响 Agent 主流程
+  - ClawTeams Plugin 的错误不会导致龙虾崩溃
+```
+
+---
+
+## 19. ClawTeams 适配层性能指南
+
+### 必须异步非阻塞
+
+```typescript
+// ❌ 错误：阻塞式上报
+api.on("agent_end", async (event) => {
+  await client.reportTaskCompleted(data);  // 等待网络往返
+  return {};
+});
+
+// ✅ 正确：fire-and-forget
+api.on("agent_end", async (event) => {
+  client.reportTaskCompleted(data).catch(err => {
+    buffer.push(data);  // 失败时缓冲
+  });
+  return {};  // 立即返回，不阻塞
+});
+```
+
+### 工具调用追踪的节流
+
+```typescript
+// 高频工具调用时，采样上报
+let toolCallCount = 0;
+const SAMPLE_RATE = 5; // 每 5 次上报 1 次
+
+api.on("before_tool_call", async (event) => {
+  toolCallCount++;
+  if (toolCallCount % SAMPLE_RATE === 0) {
+    client.reportToolCall(data);
+  }
+  return {};
+});
+```
+
+### 缓冲队列容量限制
+
+```typescript
+const MAX_BUFFER_SIZE = 1000;
+const buffer: QueuedEvent[] = [];
+
+function sendOrBuffer(msg: any) {
+  if (ws.readyState === OPEN) {
+    ws.send(JSON.stringify(msg));
+  } else if (buffer.length < MAX_BUFFER_SIZE) {
+    buffer.push(msg);
+  } else {
+    // 丢弃最旧的事件
+    buffer.shift();
+    buffer.push(msg);
+  }
+}
+```
+
+---
+
+---
+
+# Part III: 本地 OpenClaw 实例运行时分析
+
+> 基于 `/Users/kermitshao/.openclaw/` 的实际运行数据
+
+---
+
+## 20. 实例概览
+
+### 运行状态
+
+```
+进程: openclaw-gateway (PID 44807)
+CPU: 10.8%  内存: 419MB
+运行时长: 3+ 小时
+监听端口: localhost:18789 (IPv4 + IPv6)
+客户端: Chrome 浏览器通过 WebSocket 连接
+```
+
+### 业务场景：蝴蝶效应投资策略系统
+
+这是一个**多 Agent 协作投资研究系统**，包含 1 个主 Agent + 6 个专业化 Agent：
+
+| Agent ID | 角色 | Emoji | 模型 |
+|---------|------|-------|------|
+| main | 主助手 | - | - |
+| butterfly-invest | 策略分析师 | 🦋 | gpt-5.4 |
+| butterfly-invest-trigger | 信号侦察员 | ⚡ | gpt-5.4 |
+| butterfly-invest-variable | 杠杆映射师 | 🧠 | gpt-5.4 |
+| butterfly-invest-industry | 产业链解释员 | 🏭 | gpt-5.4 |
+| butterfly-invest-asset | 资产制图师 | 🗺️ | gpt-5.4 |
+| butterfly-invest-redteam | 内部反对者 | 🛡️ | gpt-5.4 |
+
+**这正是 ClawTeams 的典型用户场景**：一个人管理多个专业化 Agent，需要透视它们的协作关系和工作状态。
+
+---
+
+## 21. 配置文件结构（真实数据）
+
+### openclaw.json 关键结构
+
+```json
+{
+  "version": "2026.3.28",
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": { "type": "token" }
+  },
+  "agents": {
+    "main": { /* 主 Agent */ },
+    "butterfly-invest": {
+      "model": "openai/gpt-5.4",
+      "workspacePath": "agents/butterfly-invest",
+      "identity": { "subject": "策略分析师", "emoji": "🦋" }
+    },
+    "butterfly-invest-trigger": {
+      "model": "openai/gpt-5.4",
+      "workspacePath": "agents/butterfly-invest-trigger",
+      "identity": { "subject": "信号侦察员", "emoji": "⚡" }
+    }
+    // ... 其他 Agent
+  },
+  "channels": {
+    "whatsapp": { "enabled": true, "dmPolicy": "pairing" }
+  },
+  "plugins": {
+    "whatsapp": { "installed": true }
+  }
+}
+```
+
+### ClawTeams 适配层可提取的信息
+
+从 `openclaw.json` 中可以直接获取：
+- **Agent 列表和 ID**（注册时上报）
+- **Agent 角色描述**（identity.subject → 映射为 ClawTeams 的能力标签）
+- **模型配置**（了解每个 Agent 的能力水平）
+- **工作空间路径**（了解 Agent 的文件范围）
+- **通道配置**（了解消息来源）
+
+---
+
+## 22. 会话文件格式（真实数据）
+
+### JSONL 会话文件的实际格式
+
+文件位置：`~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl`
+
+**第 1 行：会话元数据**
+```json
+{
+  "type": "session",
+  "version": 3,
+  "id": "32b64024-1558-46e5-bf1a-b565f61452cb",
+  "timestamp": "2026-03-30T17:24:23.291Z",
+  "cwd": "/Users/kermitshao/.openclaw/workspace"
+}
+```
+
+**第 2 行：模型变更**
+```json
+{
+  "type": "model_change",
+  "id": "ea1939ea",
+  "parentId": null,
+  "timestamp": "2026-03-30T17:24:23.293Z",
+  "provider": "openai",
+  "modelId": "gpt-5.4"
+}
+```
+
+**用户消息行**
+```json
+{
+  "type": "message",
+  "id": "65e56917",
+  "parentId": "ea1939ea",
+  "timestamp": "2026-03-30T17:24:23.293Z",
+  "message": {
+    "role": "user",
+    "content": "用户输入文本..."
+  }
+}
+```
+
+**助手消息行（含工具调用）**
+```json
+{
+  "type": "message",
+  "id": "abc12345",
+  "parentId": "65e56917",
+  "timestamp": "2026-03-30T17:24:30.000Z",
+  "message": {
+    "role": "assistant",
+    "content": "助手回复...",
+    "toolCall": [
+      {
+        "id": "tu_1",
+        "name": "web_search",
+        "input": {"query": "..."}
+      }
+    ]
+  },
+  "usage": {
+    "input": 1200,
+    "output": 450,
+    "cacheRead": 800,
+    "total": 2450
+  }
+}
+```
+
+### ClawTeams 适配意义
+
+会话 JSONL 文件是 OpenClaw 的**核心数据源**。ClawTeams 适配层有两种获取方式：
+1. **Hook 实时拦截**（推荐）：通过 `agent_end` 等 Hook 获取实时数据
+2. **文件读取**（补充）：需要历史回溯时直接解析 JSONL 文件
+
+---
+
+## 23. Agent 工作空间结构（真实数据）
+
+### 主 Agent 工作空间文档体系
+
+```
+workspace/
+├── AGENTS.md         — Agent 协作指南
+├── BOOTSTRAP.md      — 启动配置
+├── HEARTBEAT.md      — 心跳配置（定时任务）
+├── IDENTITY.md       — 系统身份定义
+├── SOUL.md           — 系统灵魂文档（核心行为规范）
+├── TOOLS.md          — 工具使用说明
+├── USER.md           — 用户信息模板
+├── skills/           — 自定义技能
+│   ├── self-improving-agent/
+│   ├── x-research-skill/
+│   └── website-monitor/
+└── agents/           — 各 Agent 独立工作空间
+    ├── butterfly-invest/        — 25 个文件
+    │   ├── SOUL.md              — Agent 专属灵魂
+    │   ├── IDENTITY.md          — Agent 身份
+    │   ├── HEARTBEAT.md         — 心跳配置
+    │   ├── 5代理闭环设计.md
+    │   ├── 信息架构.md
+    │   ├── 数据模型设计.md
+    │   ├── Schema设计.md
+    │   ├── MVP功能拆解.md
+    │   └── ... (更多工作文档)
+    ├── butterfly-invest-trigger/ — 11 个文件
+    ├── butterfly-invest-variable/ — 11 个文件
+    └── ... (其他 Agent)
+```
+
+### 数据资产
+
+```
+workspace/
+├── investment_case_library_100.csv  — 100 个投资案例（蝴蝶效应分析框架）
+└── butterfly-app/                    — 应用代码
+```
+
+### ClawTeams 适配意义
+
+工作空间中的文件是 Agent 的**知识基础**和**工作产出**。ClawTeams 资产档案系统应该能：
+- 索引这些文件作为 Agent 的知识资产
+- 追踪文件变更（哪个 Agent 修改了什么）
+- 将 Agent 产出的文档自动归档
+
+---
+
+## 24. 日志格式（真实数据）
+
+### gateway.log 格式
+
+```
+2026-03-30T17:59:52.965-07:00 [agents/model-providers] [xai-auth] bootstrap config fallback
+2026-03-30T18:01:39.099-07:00 [whatsapp] Auto-replied to +16693442870
+2026-03-30T18:09:15.701-07:00 [whatsapp] Inbound message +16693442870 -> +16693442870 (direct, 140 chars)
+```
+
+格式：`{ISO时间戳} [{模块}] {消息}`
+
+### 最近观察到的运行时行为
+
+| 事件 | 频率 | 说明 |
+|------|------|------|
+| WhatsApp 消息收发 | 高频 | 主要交互通道 |
+| Agent 执行 | 中频 | 多 Agent 协作 |
+| 速率限制 | 偶发 | GPT-5.4 TPM 限制 500000 |
+| 连接超时 | 偶发 | WhatsApp 499/503 |
+| 配置变更 | 低频 | Agent 添加/修改 |
+
+### ClawTeams 适配意义
+
+日志提供了**运行时健康监控**数据。ClawTeams 可以：
+- 解析日志了解 Agent 活跃度
+- 检测错误模式（速率限制、连接问题）
+- 但**不依赖日志**作为主要数据源（Hook 更可靠）
+
+---
+
+## 25. 存储系统全景（真实数据）
+
+### 存储分布
+
+| 存储位置 | 类型 | 大小 | 内容 |
+|---------|------|------|------|
+| `agents/*/sessions/*.jsonl` | JSONL | ~50KB/会话 | 完整对话历史 |
+| `memory/main.sqlite` | SQLite | 69.6KB | 向量记忆 |
+| `openclaw.json` | JSON | 4.9KB | 系统配置 |
+| `workspace/agents/` | 文件目录 | 380KB | Agent 工作产出 |
+| `workspace/skills/` | 文件目录 | 136KB | 自定义技能 |
+| `logs/` | 文本日志 | ~70KB | 运行日志 |
+| `credentials/` | JSON | 小 | 凭证存储 |
+
+### 设备身份
+
+```json
+{
+  "deviceId": "e7053ba26403a1062...",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----...",
+  "createdAtMs": 1774838241050
+}
+```
+
+已配对 3 个设备（1 个网关 + 2 个 Web UI）。
+
+### ClawTeams 适配意义
+
+- **deviceId** 可作为龙虾实例的唯一标识（或作为 claw_id 的候选）
+- 配对设备列表可帮助 ClawTeams 了解龙虾的访问端点
+- 会话文件大小提示 ClawTeams 需要考虑历史数据的存储策略
+
+---
+
+## 26. 适配层设计的实际约束（来自真实数据）
+
+### 约束 1：Agent 数量和复杂度
+
+当前实例有 7 个 Agent，6 个有独立工作空间。ClawTeams 工作流可视化需要能处理这种规模的 Agent 网络。
+
+### 约束 2：通道多样性
+
+当前通过 WhatsApp 交互。ClawTeams 的 `before_model_resolve` Hook 会收到 `messageChannel: "whatsapp"` 字段，需要正确处理。
+
+### 约束 3：模型和速率限制
+
+使用 GPT-5.4，偶尔触发速率限制。ClawTeams 适配层需要在 Hook 中处理这种情况（不要在速率限制时上报错误状态）。
+
+### 约束 4：工作空间文件操作
+
+Agent 会在工作空间中创建/修改大量文件（25+ 个）。ClawTeams 资产档案系统需要监控这些变更，但不能过于频繁（文件级变更远比任务级变更高频）。
+
+### 约束 5：会话压缩
+
+高频对话会触发会话压缩。ClawTeams 适配层需要在 `before_compaction`/`after_compaction` Hook 中正确处理，确保不丢失历史数据。
+
+### 约束 6：实际的 Subagent 协作模式
+
+当前配置中 6 个 Agent 各自独立运行，但通过主 Agent 编排。ClawTeams 需要能识别这种"主 Agent 调度子 Agent"的模式，并正确生成工作流图。
+
+---
+
 ## 附录：OpenClaw 关键文件参考
 
 | 文件 | 用途 | 适配层相关度 |
