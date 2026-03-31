@@ -3,17 +3,19 @@ import * as fs from 'fs';
 import { Database } from './store/database';
 import { FileTracker } from './tracker/file-tracker';
 import { MdParser } from './tracker/md-parser';
+import { WsServer } from './server/ws-server';
 
 // ============================================================
-// ClawTeams 文件追踪服务 — 入口
+// ClawTeams 文件追踪 + WebSocket 服务 — 入口
 // ============================================================
 
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR ?? path.join(process.env.HOME ?? '', '.openclaw');
 const DB_PATH = path.join(__dirname, '..', 'data', 'clawteams.sqlite');
+const WS_PORT = parseInt(process.env.WS_PORT ?? '3001', 10);
 
 function main(): void {
   console.log('='.repeat(60));
-  console.log('  ClawTeams 文件追踪服务');
+  console.log('  ClawTeams 文件追踪 + WebSocket 服务');
   console.log('='.repeat(60));
   console.log();
 
@@ -26,6 +28,7 @@ function main(): void {
 
   console.log(`OpenClaw 目录: ${OPENCLAW_DIR}`);
   console.log(`数据库路径:   ${DB_PATH}`);
+  console.log(`WebSocket 端口: ${WS_PORT}`);
   console.log();
 
   // 初始化数据库
@@ -34,6 +37,15 @@ function main(): void {
 
   // 注册龙虾信息
   registerClaw(db, OPENCLAW_DIR);
+
+  // 启动 WebSocket 服务
+  const server = new WsServer({
+    port: WS_PORT,
+    db,
+    onHookEvent: (msg) => {
+      console.log(`[Hook] 收到事件: ${msg.type}`);
+    },
+  });
 
   // 启动文件追踪
   const tracker = new FileTracker(OPENCLAW_DIR, db);
@@ -47,27 +59,39 @@ function main(): void {
       const type = change.core_file_type ? ` (${change.core_file_type})` : '';
       console.log(`  ${icon} ${change.file_path}${agent}${type}`);
     }
+
+    // 文件追踪的变更也推送给前端
+    for (const change of changes) {
+      server.broadcastToFrontend({
+        type: 'file.changed',
+        payload: {
+          file_path: change.file_path,
+          change_type: change.change_type,
+          agent_id: change.agent_id,
+        },
+        timestamp: Date.now(),
+      });
+    }
   });
 
   tracker.start();
+  server.start();
 
   // 优雅关闭
-  process.on('SIGINT', () => {
-    console.log('\n[关闭] 正在停止追踪服务...');
+  const shutdown = () => {
+    console.log('\n[关闭] 正在停止服务...');
     tracker.stop();
+    server.stop();
     db.close();
     console.log('[关闭] 已停止');
     process.exit(0);
-  });
+  };
 
-  process.on('SIGTERM', () => {
-    tracker.stop();
-    db.close();
-    process.exit(0);
-  });
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 
   console.log();
-  console.log('追踪服务已启动，按 Ctrl+C 停止');
+  console.log('追踪服务 + WebSocket 服务已启动，按 Ctrl+C 停止');
   console.log();
 }
 

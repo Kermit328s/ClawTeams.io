@@ -277,6 +277,89 @@ export class Database {
     return stmt.all(filePath, limit);
   }
 
+  // ============================================================
+  // Claw 状态更新（Hook 事件用）
+  // ============================================================
+
+  updateClawStatus(clawId: string, status: 'online' | 'offline'): void {
+    const stmt = this.db.prepare(`
+      UPDATE claws SET status = @status, last_heartbeat = datetime('now')
+      WHERE claw_id = @claw_id
+    `);
+    stmt.run({ claw_id: clawId, status });
+  }
+
+  // ============================================================
+  // Agent 状态更新（Hook 事件用）
+  // ============================================================
+
+  updateAgentStatus(clawId: string, agentId: string, status: 'idle' | 'running' | 'failed'): void {
+    const stmt = this.db.prepare(`
+      UPDATE agents SET status = @status, last_active_at = datetime('now')
+      WHERE agent_id = @agent_id AND claw_id = @claw_id
+    `);
+    stmt.run({ agent_id: agentId, claw_id: clawId, status });
+  }
+
+  // ============================================================
+  // Execution 操作（Hook 事件用）
+  // ============================================================
+
+  /**
+   * 根据 run_id 查找已有执行记录（用于去重）
+   */
+  getExecutionByRunId(runId: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM executions WHERE execution_id = ?');
+    return stmt.get(runId);
+  }
+
+  /**
+   * 从 Hook 事件写入执行记录
+   */
+  insertExecutionFromHook(data: {
+    agent_id: string;
+    claw_id: string;
+    run_id: string;
+    status: 'completed' | 'failed';
+    duration_ms?: number;
+    token_input?: number;
+    token_output?: number;
+    token_total?: number;
+    has_tool_calls: boolean;
+    timestamp: number;
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO executions (
+        execution_id, agent_id, claw_id, status,
+        token_input, token_output, token_total,
+        tool_calls, started_at, completed_at, duration_ms, source
+      ) VALUES (
+        @execution_id, @agent_id, @claw_id, @status,
+        @token_input, @token_output, @token_total,
+        @tool_calls, @started_at, @completed_at, @duration_ms, 'hook'
+      )
+    `);
+
+    const completedAt = new Date(data.timestamp).toISOString();
+    const startedAt = data.duration_ms
+      ? new Date(data.timestamp - data.duration_ms).toISOString()
+      : completedAt;
+
+    stmt.run({
+      execution_id: data.run_id,
+      agent_id: data.agent_id,
+      claw_id: data.claw_id,
+      status: data.status,
+      token_input: data.token_input ?? null,
+      token_output: data.token_output ?? null,
+      token_total: data.token_total ?? null,
+      tool_calls: data.has_tool_calls ? '[]' : '[]',
+      started_at: startedAt,
+      completed_at: completedAt,
+      duration_ms: data.duration_ms ?? null,
+    });
+  }
+
   getCoreFiles(agentId?: string): unknown[] {
     if (agentId) {
       const stmt = this.db.prepare('SELECT * FROM core_files WHERE agent_id = ?');
