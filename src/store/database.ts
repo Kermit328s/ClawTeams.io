@@ -368,4 +368,382 @@ export class Database {
     const stmt = this.db.prepare('SELECT * FROM core_files');
     return stmt.all();
   }
+
+  // ============================================================
+  // Sprint 2: 扩展查询方法
+  // ============================================================
+
+  // ---- 用户 ----
+
+  createUser(user: { email: string; password_hash: string; name: string }): { id: number } {
+    const stmt = this.db.prepare(`
+      INSERT INTO users (email, password_hash, name) VALUES (@email, @password_hash, @name)
+    `);
+    const result = stmt.run(user);
+    return { id: Number(result.lastInsertRowid) };
+  }
+
+  getUserByEmail(email: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM users WHERE email = ?');
+    return stmt.get(email);
+  }
+
+  getUserById(id: number): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM users WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  // ---- 工作空间 ----
+
+  createWorkspace(ws: { name: string; owner_id: number }): { id: number } {
+    const stmt = this.db.prepare(`
+      INSERT INTO workspaces (name, owner_id) VALUES (@name, @owner_id)
+    `);
+    const result = stmt.run(ws);
+    return { id: Number(result.lastInsertRowid) };
+  }
+
+  getWorkspaces(ownerId?: number): unknown[] {
+    if (ownerId) {
+      const stmt = this.db.prepare('SELECT * FROM workspaces WHERE owner_id = ?');
+      return stmt.all(ownerId);
+    }
+    const stmt = this.db.prepare('SELECT * FROM workspaces');
+    return stmt.all();
+  }
+
+  getWorkspaceById(id: number): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM workspaces WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  // ---- Claw 查询 ----
+
+  getClawsByWorkspaceId(workspaceId: string): unknown[] {
+    const stmt = this.db.prepare('SELECT * FROM claws WHERE workspace_id = ?');
+    return stmt.all(workspaceId);
+  }
+
+  getAllClaws(): unknown[] {
+    const stmt = this.db.prepare('SELECT * FROM claws');
+    return stmt.all();
+  }
+
+  getClawById(clawId: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM claws WHERE claw_id = ?');
+    return stmt.get(clawId);
+  }
+
+  // ---- Agent 查询扩展 ----
+
+  getAgentsByClawId(clawId: string): unknown[] {
+    const stmt = this.db.prepare('SELECT * FROM agents WHERE claw_id = ?');
+    return stmt.all(clawId);
+  }
+
+  getAgentProfile(agentId: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM agents WHERE agent_id = ?');
+    return stmt.get(agentId);
+  }
+
+  getAgentProfileByPk(id: number): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM agents WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  // ---- Core File 查询扩展 ----
+
+  getCoreFilesByAgentId(agentId: string): unknown[] {
+    const stmt = this.db.prepare('SELECT * FROM core_files WHERE agent_id = ?');
+    return stmt.all(agentId);
+  }
+
+  getCoreFileContent(agentId: string, fileType: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM core_files WHERE agent_id = ? AND file_type = ?');
+    return stmt.get(agentId, fileType);
+  }
+
+  getFileVersionsByPath(filePath: string, limit = 20): unknown[] {
+    const stmt = this.db.prepare(
+      'SELECT * FROM file_versions WHERE file_path = ? ORDER BY version DESC LIMIT ?'
+    );
+    return stmt.all(filePath, limit);
+  }
+
+  getFileVersionsByCoreFileId(coreFileId: number, limit = 20): unknown[] {
+    // 先获取 core_file 的 file_path，再查 file_versions
+    const cf = this.db.prepare('SELECT file_path FROM core_files WHERE id = ?').get(coreFileId) as { file_path: string } | undefined;
+    if (!cf) return [];
+    return this.getFileVersionsByPath(cf.file_path, limit);
+  }
+
+  // ---- Execution 查询扩展 ----
+
+  getExecutionsFiltered(filters: {
+    agent_id?: string;
+    claw_id?: string;
+    workspace_id?: string;
+    status?: string;
+    date_from?: string;
+    date_to?: string;
+    limit?: number;
+    offset?: number;
+  }): unknown[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (filters.agent_id) { conditions.push('agent_id = ?'); params.push(filters.agent_id); }
+    if (filters.claw_id) { conditions.push('claw_id = ?'); params.push(filters.claw_id); }
+    if (filters.status) { conditions.push('status = ?'); params.push(filters.status); }
+    if (filters.date_from) { conditions.push('started_at >= ?'); params.push(filters.date_from); }
+    if (filters.date_to) { conditions.push('started_at <= ?'); params.push(filters.date_to); }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = filters.limit ?? 50;
+    const offset = filters.offset ?? 0;
+
+    const stmt = this.db.prepare(
+      `SELECT * FROM executions ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`
+    );
+    return stmt.all(...params, limit, offset);
+  }
+
+  getExecutionById(id: number): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM executions WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  getExecutionStats(agentId: string, period: 'today' | 'week'): {
+    total: number;
+    succeeded: number;
+    failed: number;
+    total_tokens: number;
+  } {
+    let dateFilter: string;
+    if (period === 'today') {
+      dateFilter = "started_at >= date('now', 'start of day')";
+    } else {
+      dateFilter = "started_at >= date('now', '-7 days')";
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as succeeded,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        COALESCE(SUM(token_total), 0) as total_tokens
+      FROM executions
+      WHERE agent_id = ? AND ${dateFilter}
+    `);
+
+    const row = stmt.get(agentId) as {
+      total: number;
+      succeeded: number;
+      failed: number;
+      total_tokens: number;
+    };
+
+    return {
+      total: row.total ?? 0,
+      succeeded: row.succeeded ?? 0,
+      failed: row.failed ?? 0,
+      total_tokens: row.total_tokens ?? 0,
+    };
+  }
+
+  // ---- Artifact 查询 ----
+
+  getArtifactsFiltered(filters: {
+    agent_id?: string;
+    claw_id?: string;
+    workspace_id?: string;
+    type?: string;
+    date_from?: string;
+    date_to?: string;
+    limit?: number;
+    offset?: number;
+  }): unknown[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (filters.agent_id) { conditions.push('agent_id = ?'); params.push(filters.agent_id); }
+    if (filters.claw_id) { conditions.push('claw_id = ?'); params.push(filters.claw_id); }
+    if (filters.workspace_id) { conditions.push('workspace_id = ?'); params.push(filters.workspace_id); }
+    if (filters.type) { conditions.push('type = ?'); params.push(filters.type); }
+    if (filters.date_from) { conditions.push('created_at >= ?'); params.push(filters.date_from); }
+    if (filters.date_to) { conditions.push('created_at <= ?'); params.push(filters.date_to); }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = filters.limit ?? 50;
+    const offset = filters.offset ?? 0;
+
+    const stmt = this.db.prepare(
+      `SELECT * FROM artifacts ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    );
+    return stmt.all(...params, limit, offset);
+  }
+
+  getArtifactById(id: number): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM artifacts WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  getArtifactByArtifactId(artifactId: string): unknown | undefined {
+    const stmt = this.db.prepare('SELECT * FROM artifacts WHERE artifact_id = ?');
+    return stmt.get(artifactId);
+  }
+
+  // ---- Agent Relations 查询 ----
+
+  getAgentRelations(agentId: string): unknown[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM agent_relations
+      WHERE source_agent_id = ? OR target_agent_id = ?
+      ORDER BY strength DESC
+    `);
+    return stmt.all(agentId, agentId);
+  }
+
+  // ---- Activity Log 查询 ----
+
+  getActivityLog(filters: {
+    workspace_id?: string;
+    claw_id?: string;
+    types?: string[];
+    limit?: number;
+    offset?: number;
+  }): unknown[] {
+    const limit = filters.limit ?? 50;
+    const offset = filters.offset ?? 0;
+
+    // 合并 executions 和 file_versions 和 artifacts 成活动流
+    // 按时间排序返回
+    const activities: unknown[] = [];
+
+    // 执行记录作为活动
+    {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (filters.claw_id) { conditions.push('e.claw_id = ?'); params.push(filters.claw_id); }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const stmt = this.db.prepare(`
+        SELECT
+          'execution.' || CASE WHEN e.status = 'completed' THEN 'completed'
+                               WHEN e.status = 'failed' THEN 'failed'
+                               ELSE 'started' END as type,
+          e.agent_id,
+          a.emoji as agent_emoji,
+          COALESCE(e.input_preview, '') as summary,
+          COALESCE(e.completed_at, e.started_at) as timestamp
+        FROM executions e
+        LEFT JOIN agents a ON e.agent_id = a.agent_id AND e.claw_id = a.claw_id
+        ${where}
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `);
+      const rows = stmt.all(...params, limit, offset);
+      activities.push(...(rows as unknown[]));
+    }
+
+    // 文件变更作为活动
+    {
+      const stmt = this.db.prepare(`
+        SELECT
+          'file.changed' as type,
+          cf.agent_id,
+          a.emoji as agent_emoji,
+          cf.file_type,
+          fv.version,
+          fv.created_at as timestamp
+        FROM file_versions fv
+        JOIN core_files cf ON fv.file_path = cf.file_path
+        LEFT JOIN agents a ON cf.agent_id = a.agent_id
+        ORDER BY fv.created_at DESC
+        LIMIT ? OFFSET ?
+      `);
+      const rows = stmt.all(limit, offset);
+      activities.push(...(rows as unknown[]));
+    }
+
+    // 档案创建作为活动
+    {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      if (filters.workspace_id) { conditions.push('ar.workspace_id = ?'); params.push(filters.workspace_id); }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const stmt = this.db.prepare(`
+        SELECT
+          'artifact.created' as type,
+          ar.agent_id,
+          a.emoji as agent_emoji,
+          COALESCE(ar.file_path, '') as artifact_name,
+          ar.created_at as timestamp
+        FROM artifacts ar
+        LEFT JOIN agents a ON ar.agent_id = a.agent_id
+        ${where}
+        ORDER BY ar.created_at DESC
+        LIMIT ? OFFSET ?
+      `);
+      const rows = stmt.all(...params, limit, offset);
+      activities.push(...(rows as unknown[]));
+    }
+
+    // 合并排序
+    (activities as { timestamp: string }[]).sort((a, b) => {
+      return (b.timestamp ?? '').localeCompare(a.timestamp ?? '');
+    });
+
+    // 类型过滤
+    let filtered = activities as { type: string }[];
+    if (filters.types && filters.types.length > 0) {
+      filtered = filtered.filter(a => filters.types!.some(t => a.type.startsWith(t)));
+    }
+
+    return filtered.slice(0, limit);
+  }
+
+  // ---- 工作流图辅助 ----
+
+  getAllAgentsForWorkspace(workspaceId?: string): unknown[] {
+    if (workspaceId) {
+      const stmt = this.db.prepare(`
+        SELECT a.* FROM agents a
+        JOIN claws c ON a.claw_id = c.claw_id
+        WHERE c.workspace_id = ?
+      `);
+      return stmt.all(workspaceId);
+    }
+    const stmt = this.db.prepare('SELECT * FROM agents');
+    return stmt.all();
+  }
+
+  getAllRelationsForWorkspace(workspaceId?: string): unknown[] {
+    if (workspaceId) {
+      const stmt = this.db.prepare(`
+        SELECT ar.* FROM agent_relations ar
+        JOIN agents a ON ar.source_agent_id = a.agent_id
+        JOIN claws c ON a.claw_id = c.claw_id
+        WHERE c.workspace_id = ?
+      `);
+      return stmt.all(workspaceId);
+    }
+    const stmt = this.db.prepare('SELECT * FROM agent_relations');
+    return stmt.all();
+  }
+
+  // ---- Raw 查询（用于直接 SQL） ----
+
+  rawGet(sql: string, ...params: unknown[]): unknown | undefined {
+    return this.db.prepare(sql).get(...params);
+  }
+
+  rawAll(sql: string, ...params: unknown[]): unknown[] {
+    return this.db.prepare(sql).all(...params);
+  }
+
+  rawRun(sql: string, ...params: unknown[]): void {
+    this.db.prepare(sql).run(...params);
+  }
 }

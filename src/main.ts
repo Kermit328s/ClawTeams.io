@@ -4,18 +4,20 @@ import { Database } from './store/database';
 import { FileTracker } from './tracker/file-tracker';
 import { MdParser } from './tracker/md-parser';
 import { WsServer } from './server/ws-server';
+import { createApiServer } from './api/server';
 
 // ============================================================
-// ClawTeams 文件追踪 + WebSocket 服务 — 入口
+// ClawTeams 文件追踪 + WebSocket + HTTP API 服务 — 入口
 // ============================================================
 
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR ?? path.join(process.env.HOME ?? '', '.openclaw');
 const DB_PATH = path.join(__dirname, '..', 'data', 'clawteams.sqlite');
 const WS_PORT = parseInt(process.env.WS_PORT ?? '3001', 10);
+const API_PORT = parseInt(process.env.API_PORT ?? '3000', 10);
 
-function main(): void {
+async function main(): Promise<void> {
   console.log('='.repeat(60));
-  console.log('  ClawTeams 文件追踪 + WebSocket 服务');
+  console.log('  ClawTeams 文件追踪 + WebSocket + HTTP API 服务');
   console.log('='.repeat(60));
   console.log();
 
@@ -29,6 +31,7 @@ function main(): void {
   console.log(`OpenClaw 目录: ${OPENCLAW_DIR}`);
   console.log(`数据库路径:   ${DB_PATH}`);
   console.log(`WebSocket 端口: ${WS_PORT}`);
+  console.log(`HTTP API 端口:  ${API_PORT}`);
   console.log();
 
   // 初始化数据库
@@ -38,8 +41,13 @@ function main(): void {
   // 注册龙虾信息
   registerClaw(db, OPENCLAW_DIR);
 
+  // 启动 HTTP API 服务
+  const apiServer = await createApiServer({ port: API_PORT, db });
+  await apiServer.listen({ port: API_PORT, host: '0.0.0.0' });
+  console.log(`[API] HTTP API 服务已启动: http://localhost:${API_PORT}`);
+
   // 启动 WebSocket 服务
-  const server = new WsServer({
+  const wsServer = new WsServer({
     port: WS_PORT,
     db,
     onHookEvent: (msg) => {
@@ -62,7 +70,7 @@ function main(): void {
 
     // 文件追踪的变更也推送给前端
     for (const change of changes) {
-      server.broadcastToFrontend({
+      wsServer.broadcastToFrontend({
         type: 'file.changed',
         payload: {
           file_path: change.file_path,
@@ -75,13 +83,14 @@ function main(): void {
   });
 
   tracker.start();
-  server.start();
+  wsServer.start();
 
   // 优雅关闭
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log('\n[关闭] 正在停止服务...');
     tracker.stop();
-    server.stop();
+    wsServer.stop();
+    await apiServer.close();
     db.close();
     console.log('[关闭] 已停止');
     process.exit(0);
@@ -91,7 +100,10 @@ function main(): void {
   process.on('SIGTERM', shutdown);
 
   console.log();
-  console.log('追踪服务 + WebSocket 服务已启动，按 Ctrl+C 停止');
+  console.log('所有服务已启动，按 Ctrl+C 停止');
+  console.log(`  HTTP API:   http://localhost:${API_PORT}/api/v1/health`);
+  console.log(`  WebSocket:  ws://localhost:${WS_PORT}/ws/hook`);
+  console.log(`  前端推送:   ws://localhost:${WS_PORT}/ws/frontend`);
   console.log();
 }
 

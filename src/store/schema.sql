@@ -1,6 +1,24 @@
 -- ClawTeams 文件追踪服务 — SQLite Schema
 -- 所有时间字段使用 ISO 8601 字符串
 
+-- 用户（简化版，单人场景）
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  name          TEXT NOT NULL DEFAULT '',
+  token         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 工作空间
+CREATE TABLE IF NOT EXISTS workspaces (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL DEFAULT '',
+  owner_id      INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 龙虾注册
 CREATE TABLE IF NOT EXISTS claws (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
