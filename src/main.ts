@@ -10,45 +10,62 @@ import { createApiServer } from './api/server';
 // ClawTeams 文件追踪 + WebSocket + HTTP API 服务 — 入口
 // ============================================================
 
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR ?? path.join(process.env.HOME ?? '', '.openclaw');
-const DB_PATH = path.join(__dirname, '..', 'data', 'clawteams.sqlite');
-const WS_PORT = parseInt(process.env.WS_PORT ?? '3001', 10);
-const API_PORT = parseInt(process.env.API_PORT ?? '3000', 10);
+// ---- 解析命令行参数 ----
+function parseArgs(): { openclawDir: string; wsPort: number; apiPort: number; dbPath: string } {
+  const args = process.argv.slice(2);
+  let openclawDir = process.env.OPENCLAW_DIR ?? path.join(process.env.HOME ?? '', '.openclaw');
+  const wsPort = parseInt(process.env.WS_PORT ?? '3001', 10);
+  const apiPort = parseInt(process.env.API_PORT ?? '3000', 10);
+  const dbPath = process.env.DB_PATH ?? path.join(__dirname, '..', 'data', 'clawteams.sqlite');
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--openclaw-dir' && args[i + 1]) {
+      openclawDir = args[++i];
+    }
+  }
+
+  return { openclawDir, wsPort, apiPort, dbPath };
+}
 
 async function main(): Promise<void> {
+  const { openclawDir, wsPort, apiPort, dbPath } = parseArgs();
+
   console.log('='.repeat(60));
   console.log('  ClawTeams 文件追踪 + WebSocket + HTTP API 服务');
   console.log('='.repeat(60));
   console.log();
 
   // 验证 OpenClaw 目录存在
-  if (!fs.existsSync(OPENCLAW_DIR)) {
-    console.error(`错误: OpenClaw 目录不存在 — ${OPENCLAW_DIR}`);
-    console.error('请设置 OPENCLAW_DIR 环境变量或确认 ~/.openclaw/ 存在');
+  if (!fs.existsSync(openclawDir)) {
+    console.error(`错误: OpenClaw 目录不存在 — ${openclawDir}`);
+    console.error('请设置 OPENCLAW_DIR 环境变量或使用 --openclaw-dir 参数');
     process.exit(1);
   }
 
-  console.log(`OpenClaw 目录: ${OPENCLAW_DIR}`);
-  console.log(`数据库路径:   ${DB_PATH}`);
-  console.log(`WebSocket 端口: ${WS_PORT}`);
-  console.log(`HTTP API 端口:  ${API_PORT}`);
+  console.log(`OpenClaw 目录: ${openclawDir}`);
+  console.log(`数据库路径:   ${dbPath}`);
+  console.log(`WebSocket 端口: ${wsPort}`);
+  console.log(`HTTP API 端口:  ${apiPort}`);
   console.log();
 
   // 初始化数据库
-  const db = new Database(DB_PATH);
+  const db = new Database(dbPath);
   console.log('[DB] 数据库初始化完成');
 
-  // 注册龙虾信息
-  registerClaw(db, OPENCLAW_DIR);
+  // 注册龙虾信息（增强版：从 IDENTITY.md 读取 emoji 和角色名）
+  const { clawId, agentCount } = registerClaw(db, openclawDir);
+
+  // 创建默认工作空间
+  ensureDefaultWorkspace(db);
 
   // 启动 HTTP API 服务
-  const apiServer = await createApiServer({ port: API_PORT, db });
-  await apiServer.listen({ port: API_PORT, host: '0.0.0.0' });
-  console.log(`[API] HTTP API 服务已启动: http://localhost:${API_PORT}`);
+  const apiServer = await createApiServer({ port: apiPort, db });
+  await apiServer.listen({ port: apiPort, host: '0.0.0.0' });
+  console.log(`[API] HTTP API 服务已启动: http://localhost:${apiPort}`);
 
   // 启动 WebSocket 服务
   const wsServer = new WsServer({
-    port: WS_PORT,
+    port: wsPort,
     db,
     onHookEvent: (msg) => {
       console.log(`[Hook] 收到事件: ${msg.type}`);
@@ -56,7 +73,7 @@ async function main(): Promise<void> {
   });
 
   // 启动文件追踪
-  const tracker = new FileTracker(OPENCLAW_DIR, db);
+  const tracker = new FileTracker(openclawDir, db);
 
   tracker.onChange((changes) => {
     console.log();
@@ -100,24 +117,33 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   console.log();
-  console.log('所有服务已启动，按 Ctrl+C 停止');
-  console.log(`  HTTP API:   http://localhost:${API_PORT}/api/v1/health`);
-  console.log(`  WebSocket:  ws://localhost:${WS_PORT}/ws/hook`);
-  console.log(`  前端推送:   ws://localhost:${WS_PORT}/ws/frontend`);
+  console.log('='.repeat(60));
+  console.log('  ClawTeams 阶段一启动完成');
+  console.log('='.repeat(60));
+  console.log(`  API:        http://localhost:${apiPort}`);
+  console.log(`  WebSocket:  ws://localhost:${wsPort}`);
+  console.log(`  前端:       cd src/frontend && npm run dev`);
+  if (clawId) {
+    console.log(`  龙虾:       ${openclawDir} (${agentCount} 个 Agent)`);
+  }
+  console.log(`  文件追踪:   每 10 秒扫描`);
+  console.log('='.repeat(60));
   console.log();
+  console.log('按 Ctrl+C 停止所有服务');
 }
 
 /**
  * 从 openclaw.json 和 device.json 注册龙虾及其 Agent
+ * 增强：从各 Agent 的 IDENTITY.md 读取 emoji 和角色名
  */
-function registerClaw(db: Database, openclawDir: string): void {
+function registerClaw(db: Database, openclawDir: string): { clawId: string; agentCount: number } {
   const parser = new MdParser();
 
   // 读取 openclaw.json
   const configPath = path.join(openclawDir, 'openclaw.json');
   if (!fs.existsSync(configPath)) {
     console.warn('[注册] 未找到 openclaw.json');
-    return;
+    return { clawId: '', agentCount: 0 };
   }
 
   const configContent = fs.readFileSync(configPath, 'utf-8');
@@ -126,8 +152,16 @@ function registerClaw(db: Database, openclawDir: string): void {
   // 读取 device.json 获取 claw_id
   const devicePath = path.join(openclawDir, 'identity', 'device.json');
   if (fs.existsSync(devicePath)) {
-    const device = JSON.parse(fs.readFileSync(devicePath, 'utf-8'));
-    registration.claw_id = device.deviceId ?? '';
+    try {
+      const device = JSON.parse(fs.readFileSync(devicePath, 'utf-8'));
+      registration.claw_id = device.deviceId ?? '';
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!registration.claw_id) {
+    registration.claw_id = `local-${Date.now()}`;
   }
 
   // 注册龙虾
@@ -143,8 +177,21 @@ function registerClaw(db: Database, openclawDir: string): void {
   console.log(`[注册] 默认模型: ${registration.model_default}`);
   console.log(`[注册] Agent 数量: ${registration.agents.length}`);
 
-  // 注册所有 Agent
+  // 注册所有 Agent（增强：从 IDENTITY.md 读取）
   for (const agent of registration.agents) {
+    // 尝试从 IDENTITY.md 读取更多信息
+    const identityPath = path.join(openclawDir, 'agents', agent.agent_id, 'IDENTITY.md');
+    if (fs.existsSync(identityPath)) {
+      try {
+        const identityContent = fs.readFileSync(identityPath, 'utf-8');
+        const identity = parser.parseIdentity(identityContent);
+        if (identity.emoji && !agent.emoji) agent.emoji = identity.emoji;
+        if (identity.name && !agent.name) agent.name = identity.name;
+      } catch {
+        // ignore parse errors
+      }
+    }
+
     db.upsertAgent({
       agent_id: agent.agent_id,
       claw_id: registration.claw_id,
@@ -160,6 +207,22 @@ function registerClaw(db: Database, openclawDir: string): void {
   }
 
   console.log();
+  return { clawId: registration.claw_id, agentCount: registration.agents.length };
+}
+
+/**
+ * 确保存在默认工作空间
+ */
+function ensureDefaultWorkspace(db: Database): void {
+  try {
+    const workspaces = db.getWorkspaces();
+    if (workspaces.length === 0) {
+      db.createWorkspace({ name: 'Default Workspace', owner_id: 0 });
+      console.log('[注册] 创建默认工作空间');
+    }
+  } catch {
+    // ignore
+  }
 }
 
 // 运行

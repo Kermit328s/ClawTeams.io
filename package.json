@@ -5,8 +5,9 @@
   "description": "ClawTeams - Team collaboration operating system that eliminates context drift",
   "scripts": {
     "test": "jest --passWithNoTests",
+    "test:e2e": "jest --testPathPattern=tests/e2e --passWithNoTests --testTimeout=30000",
     "test:integration": "jest --testPathPattern=tests/integration --passWithNoTests",
-    "test:unit": "jest --testPathIgnorePatterns=tests/integration --passWithNoTests",
+    "test:unit": "jest --testPathIgnorePatterns='tests/(integration|e2e)' --passWithNoTests",
     "lint": "eslint src/ tests/",
     "typecheck": "tsc --noEmit",
     "build": "tsc -b"

@@ -112,6 +112,15 @@ export class WsServer {
   }
 
   /**
+   * 获取服务实际监听端口（port=0 时分配的随机端口）
+   */
+  getPort(): number {
+    const addr = this.httpServer.address();
+    if (typeof addr === 'object' && addr) return addr.port;
+    return this.port;
+  }
+
+  /**
    * 获取连接统计
    */
   getStats(): { hookConnections: number; frontendConnections: number } {
