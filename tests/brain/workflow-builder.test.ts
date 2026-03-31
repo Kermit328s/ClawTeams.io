@@ -1,5 +1,5 @@
 // ============================================================
-// 工作流图生成测试
+// 工作流图生成测试（Sprint 3 更新版）
 // ============================================================
 
 import * as path from 'path';
@@ -65,21 +65,25 @@ describe('WorkflowBuilder', () => {
   it('generates nodes from agents', () => {
     const graph = builder.buildGraph('');
     expect(graph.nodes.length).toBeGreaterThanOrEqual(3);
-    const nodeIds = graph.nodes.map(n => n.agent_id);
+    const nodeIds = graph.nodes.map(n => n.data.agent_id);
     expect(nodeIds).toContain('wf-agent-a');
     expect(nodeIds).toContain('wf-agent-b');
     expect(nodeIds).toContain('wf-agent-c');
   });
 
-  it('node has correct structure', () => {
+  it('node has correct React Flow structure', () => {
     const graph = builder.buildGraph('');
-    const node = graph.nodes.find(n => n.agent_id === 'wf-agent-a');
+    const node = graph.nodes.find(n => n.data.agent_id === 'wf-agent-a');
     expect(node).toBeDefined();
     expect(node!.id).toBe('wf-agent-a');
-    expect(node!.name).toBe('Agent A');
-    expect(node!.emoji).toBe('🅰️');
     expect(node!.type).toBe('agent');
-    expect(node!.status).toBeDefined();
+    expect(node!.position).toBeDefined();
+    expect(node!.position.x).toBeDefined();
+    expect(node!.position.y).toBeDefined();
+    expect(node!.data.name).toBe('Agent A');
+    expect(node!.data.emoji).toBe('🅰️');
+    expect(node!.data.status).toBeDefined();
+    expect(node!.data.execution_stats).toBeDefined();
   });
 
   it('includes dynamic relations as edges', () => {
@@ -103,12 +107,12 @@ describe('WorkflowBuilder', () => {
 
     const edgeAB = graph.edges.find(e => e.source === 'wf-agent-a' && e.target === 'wf-agent-b');
     expect(edgeAB).toBeDefined();
-    expect(edgeAB!.relation_type).toBe('collaboration');
-    expect(edgeAB!.label).toBe('A sends data to B');
+    expect(edgeAB!.type).toBe('collaboration');
+    expect(edgeAB!.data.label).toBe('A sends data to B');
 
     const edgeBC = graph.edges.find(e => e.source === 'wf-agent-b' && e.target === 'wf-agent-c');
     expect(edgeBC).toBeDefined();
-    expect(edgeBC!.relation_type).toBe('subagent');
+    expect(edgeBC!.type).toBe('subagent');
   });
 
   it('merges static and dynamic edges', () => {
@@ -122,11 +126,20 @@ describe('WorkflowBuilder', () => {
     const graph = builder.buildGraph('');
     // 同一对 agent 同类型关系只应有一条边
     const edgesAB = graph.edges.filter(
-      e => e.source === 'wf-agent-a' && e.target === 'wf-agent-b' && e.relation_type === 'collaboration'
+      e => e.source === 'wf-agent-a' && e.target === 'wf-agent-b' && e.type === 'collaboration'
     );
     expect(edgesAB.length).toBe(1);
     // strength 应该增加（upsertAgentRelation 自动 +1）
-    expect(edgesAB[0].strength).toBeGreaterThanOrEqual(2);
+    expect(edgesAB[0].data.strength).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns graph with metadata', () => {
+    const graph = builder.buildGraph('');
+    expect(graph.metadata).toBeDefined();
+    expect(graph.metadata.generated_at).toBeGreaterThan(0);
+    expect(typeof graph.metadata.static_edge_count).toBe('number');
+    expect(typeof graph.metadata.dynamic_edge_count).toBe('number');
+    expect(Array.isArray(graph.metadata.data_sources)).toBe(true);
   });
 
   it('returns empty edges when no relations exist', () => {

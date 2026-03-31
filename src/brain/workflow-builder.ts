@@ -1,172 +1,136 @@
 // ============================================================
-// 工作流图自动生成 — 从 md + 运行数据合并
+// 工作流图自动生成 — 从 md + 运行数据合并（Sprint 3 重构版）
 // ============================================================
 
 import { Database } from '../store/database';
 import { MdParser } from '../tracker/md-parser';
+import { AgentRegistration } from '../tracker/types';
+import { GraphExtractor } from '../workflow/graph-extractor';
+import { RuntimeExtractor } from '../workflow/runtime-extractor';
+import { GraphMerger } from '../workflow/graph-merger';
+import { GraphLayout } from '../workflow/layout';
+import { WorkflowGraph, WorkflowNode, WorkflowEdge } from '../workflow/types';
 
-export interface WorkflowNode {
-  id: string;
-  agent_id: string;
-  name: string;
-  emoji: string;
-  status: string;
-  type: 'agent';
-}
-
-export interface WorkflowEdge {
-  source: string;
-  target: string;
-  relation_type: string;
-  strength: number;
-  label: string;
-}
-
-export interface WorkflowGraph {
-  nodes: WorkflowNode[];
-  edges: WorkflowEdge[];
-}
+// 保留旧接口的兼容导出
+export type { WorkflowNode, WorkflowEdge, WorkflowGraph };
 
 interface DbAgent {
   agent_id: string;
+  claw_id: string;
   name: string;
   emoji: string;
   status: string;
-}
-
-interface DbRelation {
-  source_agent_id: string;
-  target_agent_id: string;
-  relation_type: string;
-  strength: number;
-  source_info: string | null;
-}
-
-interface DbCoreFile {
-  agent_id: string | null;
-  file_type: string;
-  file_path: string;
-  current_content: string | null;
+  model: string;
+  workspace_path: string;
+  theme: string;
 }
 
 /**
- * 工作流图生成器
+ * 工作流图生成器（Sprint 3 版本）
+ *
+ * 使用三层架构:
+ * 1. GraphExtractor — 从 md 文件提取静态关系
+ * 2. RuntimeExtractor — 从运行时数据提取动态关系
+ * 3. GraphMerger — 合并+去重+布局
  */
 export class WorkflowBuilder {
+  private graphExtractor: GraphExtractor;
+  private runtimeExtractor: RuntimeExtractor;
+  private graphMerger: GraphMerger;
+
   constructor(
     private db: Database,
     private mdParser: MdParser,
-  ) {}
+  ) {
+    this.graphExtractor = new GraphExtractor(mdParser, db);
+    this.runtimeExtractor = new RuntimeExtractor(db);
+    this.graphMerger = new GraphMerger();
+  }
 
   /**
-   * 生成工作流图
+   * 生成完整的工作流图（含位置、样式等 React Flow 字段）
    */
   buildGraph(workspaceId: string): WorkflowGraph {
-    // 获取所有 Agent 作为节点
-    const agents = this.db.getAllAgentsForWorkspace(workspaceId) as DbAgent[];
-    // 如果 workspace 下没有 agent，返回所有 agent
-    const allAgents = agents.length > 0 ? agents : this.db.getAllAgentsForWorkspace() as DbAgent[];
+    // 1. 获取所有 Agent
+    const agents = this.getAgents(workspaceId);
 
-    const nodes: WorkflowNode[] = allAgents.map(agent => ({
-      id: agent.agent_id,
-      agent_id: agent.agent_id,
-      name: agent.name,
-      emoji: agent.emoji,
-      status: agent.status,
-      type: 'agent' as const,
-    }));
+    // 2. 从 md 文件提取静态关系
+    const clawId = this.getClawId(workspaceId);
+    const staticResult = this.graphExtractor.extractFromMdFiles(clawId, agents);
 
-    // 提取静态关系（from md files）
-    const staticEdges = this.extractStaticRelations();
+    // 3. 从运行时数据提取动态关系
+    const dynamicEdges = this.runtimeExtractor.extractAll(workspaceId);
 
-    // 提取动态关系（from runtime data）
-    const dynamicEdges = this.extractDynamicRelations(workspaceId);
+    // 4. 获取 Agent 实时状态
+    const agentStatuses = this.getAgentStatuses(agents);
 
-    // 合并去重
-    const edges = this.mergeEdges(staticEdges, dynamicEdges);
+    // 5. 合并生成最终图
+    const graph = this.graphMerger.merge(agents, staticResult, dynamicEdges, agentStatuses);
 
-    return { nodes, edges };
+    // 6. 计算布局
+    graph.nodes = GraphLayout.layout(graph.nodes, graph.edges);
+
+    return graph;
   }
 
   /**
-   * 数据源1：从 md 文件提取静态协作关系
+   * 获取工作空间下的所有 Agent（转为 AgentRegistration 格式）
    */
-  private extractStaticRelations(): WorkflowEdge[] {
-    const edges: WorkflowEdge[] = [];
+  private getAgents(workspaceId: string): AgentRegistration[] {
+    const dbAgents = this.db.getAllAgentsForWorkspace(workspaceId) as DbAgent[];
+    const agents = dbAgents.length > 0
+      ? dbAgents
+      : this.db.getAllAgentsForWorkspace() as DbAgent[];
 
-    // 查找所有 agents_protocol / agent_network 类型的 core_files
-    const coreFiles = this.db.getCoreFiles() as DbCoreFile[];
+    return agents.map(a => ({
+      agent_id: a.agent_id,
+      name: a.name,
+      emoji: a.emoji,
+      theme: a.theme ?? '',
+      model: a.model ?? '',
+      workspace_path: a.workspace_path ?? '',
+    }));
+  }
 
-    for (const file of coreFiles) {
-      if (!file.current_content) continue;
+  /**
+   * 获取第一个 Claw ID（用于 md 解析上下文）
+   */
+  private getClawId(workspaceId: string): string {
+    const claws = this.db.getClawsByWorkspaceId(workspaceId) as { claw_id: string }[];
+    if (claws.length > 0) return claws[0].claw_id;
+    const allClaws = this.db.getAllClaws() as { claw_id: string }[];
+    return allClaws[0]?.claw_id ?? '';
+  }
 
+  /**
+   * 获取所有 Agent 的实时状态和执行统计
+   */
+  private getAgentStatuses(
+    agents: AgentRegistration[],
+  ): Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number } }> {
+    const statuses = new Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number } }>();
+
+    for (const agent of agents) {
       try {
-        const parsed = this.mdParser.autoDetectAndParse(file.file_path, file.current_content);
+        const profile = this.db.getAgentProfile(agent.agent_id) as { status?: string } | undefined;
+        const stats = this.db.getExecutionStats(agent.agent_id, 'today');
 
-        if (parsed.type === 'agent_network' && parsed.data) {
-          const network = parsed.data as { edges?: { from: string; to: string; relation: string }[] };
-          if (network.edges) {
-            for (const edge of network.edges) {
-              edges.push({
-                source: edge.from,
-                target: edge.to,
-                relation_type: 'collaboration',
-                strength: 1,
-                label: edge.relation,
-              });
-            }
-          }
-        }
+        statuses.set(agent.agent_id, {
+          status: (profile?.status as 'idle' | 'running' | 'failed') ?? 'idle',
+          stats: {
+            today_total: stats.total,
+            today_succeeded: stats.succeeded,
+            today_failed: stats.failed,
+          },
+        });
       } catch {
-        // 解析失败，跳过
+        statuses.set(agent.agent_id, {
+          status: 'idle',
+          stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
+        });
       }
     }
 
-    return edges;
-  }
-
-  /**
-   * 数据源2：从运行时数据提取动态关系
-   */
-  private extractDynamicRelations(workspaceId: string): WorkflowEdge[] {
-    const relations = this.db.getAllRelationsForWorkspace(workspaceId) as DbRelation[];
-    // 如果 workspace 下没有关系，获取所有
-    const allRelations = relations.length > 0 ? relations : this.db.getAllRelationsForWorkspace() as DbRelation[];
-
-    return allRelations.map(r => ({
-      source: r.source_agent_id,
-      target: r.target_agent_id,
-      relation_type: r.relation_type,
-      strength: r.strength,
-      label: r.source_info ?? r.relation_type,
-    }));
-  }
-
-  /**
-   * 合并去重
-   */
-  private mergeEdges(staticEdges: WorkflowEdge[], dynamicEdges: WorkflowEdge[]): WorkflowEdge[] {
-    const edgeMap = new Map<string, WorkflowEdge>();
-
-    for (const edge of staticEdges) {
-      const key = `${edge.source}->${edge.target}:${edge.relation_type}`;
-      edgeMap.set(key, edge);
-    }
-
-    for (const edge of dynamicEdges) {
-      const key = `${edge.source}->${edge.target}:${edge.relation_type}`;
-      const existing = edgeMap.get(key);
-      if (existing) {
-        // 合并：取更大的 strength，保留动态 label
-        existing.strength = Math.max(existing.strength, edge.strength);
-        if (edge.label && edge.label !== edge.relation_type) {
-          existing.label = edge.label;
-        }
-      } else {
-        edgeMap.set(key, edge);
-      }
-    }
-
-    return Array.from(edgeMap.values());
+    return statuses;
   }
 }
