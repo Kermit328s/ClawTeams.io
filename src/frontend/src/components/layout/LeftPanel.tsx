@@ -101,11 +101,11 @@ export const LeftPanel: React.FC = () => {
 
             {/* Agent list */}
             <div className="ml-1">
-              {claw.agents.map((agent, i) => (
+              {(claw.agents ?? []).map((agent, i) => (
                 <AgentRow
                   key={agent.agent_id}
                   agent={agent}
-                  isLast={i === claw.agents.length - 1}
+                  isLast={i === (claw.agents ?? []).length - 1}
                 />
               ))}
             </div>

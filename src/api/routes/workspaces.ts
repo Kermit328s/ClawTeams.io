@@ -22,18 +22,23 @@ export function registerWorkspacesRoutes(app: FastifyInstance, db: Database): vo
 
   // 列出工作空间
   app.get('/api/v1/workspaces', async () => {
-    return db.getWorkspaces();
+    const workspaces = db.getWorkspaces();
+    // Map DB `id` to `workspace_id` that the frontend expects
+    return workspaces.map((ws: any) => ({
+      ...ws,
+      workspace_id: String(ws.id),
+    }));
   });
 
   // 工作空间详情
   app.get('/api/v1/workspaces/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    const workspace = db.getWorkspaceById(Number(id));
+    const workspace = db.getWorkspaceById(Number(id)) as any;
 
     if (!workspace) {
       return reply.status(404).send({ error: 'workspace not found' });
     }
 
-    return workspace;
+    return { ...workspace, workspace_id: String(workspace.id) };
   });
 }

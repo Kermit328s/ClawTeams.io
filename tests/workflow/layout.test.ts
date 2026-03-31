@@ -1,30 +1,34 @@
 // ============================================================
-// GraphLayout 测试
+// GraphLayout 测试 — 技能级版本
 // ============================================================
 
 import { GraphLayout } from '../../src/workflow/layout';
 import { WorkflowNode, WorkflowEdge } from '../../src/workflow/types';
 
-function makeNode(id: string, overrides?: Partial<WorkflowNode['data']>): WorkflowNode {
+function makeSkillNode(agentId: string, skillIndex: number, overrides?: Partial<WorkflowNode['data']>): WorkflowNode {
   return {
-    id,
-    type: 'agent',
+    id: `${agentId}::${skillIndex}`,
+    type: 'skill',
     position: { x: 0, y: 0 },
     data: {
-      agent_id: id,
-      name: id,
-      emoji: '',
-      role: '',
+      skill_id: `${agentId}::${skillIndex}`,
+      agent_id: agentId,
+      agent_emoji: '🤖',
+      agent_name: agentId,
+      skill_name: `Skill ${skillIndex}`,
+      skill_icon: '⚡',
+      skill_index: skillIndex,
+      skill_total: 3,
       status: 'idle',
-      model: '',
       is_crosscut: false,
-      execution_stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
+      agent_color: '#64748B',
+      execution_stats: { total: 0, succeeded: 0, failed: 0, tokens: 0 },
       ...overrides,
     },
   };
 }
 
-function makeEdge(source: string, target: string, type: WorkflowEdge['type'] = 'collaboration'): WorkflowEdge {
+function makeEdge(source: string, target: string, type: WorkflowEdge['type'] = 'internal'): WorkflowEdge {
   return {
     id: `${source}-${target}`,
     source,
@@ -37,124 +41,75 @@ function makeEdge(source: string, target: string, type: WorkflowEdge['type'] = '
 describe('GraphLayout', () => {
   it('handles empty nodes', () => {
     const result = GraphLayout.layout([], []);
-    expect(result).toEqual([]);
+    expect(result.skillNodes).toEqual([]);
+    expect(result.groupNodes).toEqual([]);
   });
 
-  it('handles single node', () => {
-    const nodes = [makeNode('a')];
+  it('creates group nodes for each agent', () => {
+    const nodes = [
+      makeSkillNode('agent-a', 0),
+      makeSkillNode('agent-a', 1),
+      makeSkillNode('agent-b', 0),
+    ];
     const result = GraphLayout.layout(nodes, []);
-    expect(result.length).toBe(1);
-    expect(result[0].position.x).toBeGreaterThan(0);
+    expect(result.groupNodes.length).toBe(2);
+    expect(result.skillNodes.length).toBe(3);
   });
 
-  it('arranges main chain nodes left to right', () => {
+  it('arranges same-agent skills horizontally (left to right)', () => {
     const nodes = [
-      makeNode('butterfly-invest-trigger'),
-      makeNode('butterfly-invest-variable'),
-      makeNode('butterfly-invest-industry'),
-      makeNode('butterfly-invest-asset'),
+      makeSkillNode('agent-a', 0),
+      makeSkillNode('agent-a', 1),
+      makeSkillNode('agent-a', 2),
     ];
-    const edges = [
-      makeEdge('butterfly-invest-trigger', 'butterfly-invest-variable', 'sequence'),
-      makeEdge('butterfly-invest-variable', 'butterfly-invest-industry', 'sequence'),
-      makeEdge('butterfly-invest-industry', 'butterfly-invest-asset', 'sequence'),
-    ];
+    const result = GraphLayout.layout(nodes, []);
 
-    const result = GraphLayout.layout(nodes, edges);
+    const skill0 = result.skillNodes.find(n => n.id === 'agent-a::0')!;
+    const skill1 = result.skillNodes.find(n => n.id === 'agent-a::1')!;
+    const skill2 = result.skillNodes.find(n => n.id === 'agent-a::2')!;
 
-    // 节点应该按拓扑顺序从左到右排列
-    const trigger = result.find(n => n.id === 'butterfly-invest-trigger')!;
-    const variable = result.find(n => n.id === 'butterfly-invest-variable')!;
-    const industry = result.find(n => n.id === 'butterfly-invest-industry')!;
-    const asset = result.find(n => n.id === 'butterfly-invest-asset')!;
-
-    expect(trigger.position.x).toBeLessThan(variable.position.x);
-    expect(variable.position.x).toBeLessThan(industry.position.x);
-    expect(industry.position.x).toBeLessThan(asset.position.x);
+    expect(skill0.position.x).toBeLessThan(skill1.position.x);
+    expect(skill1.position.x).toBeLessThan(skill2.position.x);
+    // Same Y
+    expect(skill0.position.y).toBe(skill1.position.y);
+    expect(skill1.position.y).toBe(skill2.position.y);
   });
 
-  it('places crosscut nodes below main chain', () => {
+  it('arranges main chain agents in correct vertical order', () => {
     const nodes = [
-      makeNode('butterfly-invest-trigger'),
-      makeNode('butterfly-invest-variable'),
-      makeNode('butterfly-invest-redteam', { is_crosscut: true }),
-    ];
-    const edges = [
-      makeEdge('butterfly-invest-trigger', 'butterfly-invest-variable', 'sequence'),
+      makeSkillNode('butterfly-invest-trigger', 0),
+      makeSkillNode('butterfly-invest-variable', 0),
+      makeSkillNode('butterfly-invest-industry', 0),
+      makeSkillNode('butterfly-invest-asset', 0),
     ];
 
-    const result = GraphLayout.layout(nodes, edges);
+    const result = GraphLayout.layout(nodes, []);
 
-    const mainNodes = result.filter(n => !n.data.is_crosscut);
-    const crosscutNodes = result.filter(n => n.data.is_crosscut);
+    const trigger = result.skillNodes.find(n => n.data.agent_id.includes('trigger'))!;
+    const variable = result.skillNodes.find(n => n.data.agent_id.includes('variable'))!;
+    const industry = result.skillNodes.find(n => n.data.agent_id.includes('industry'))!;
+    const asset = result.skillNodes.find(n => n.data.agent_id.includes('asset'))!;
+
+    // Each row should have increasing Y
+    expect(trigger.position.y).toBeLessThan(variable.position.y);
+    expect(variable.position.y).toBeLessThan(industry.position.y);
+    expect(industry.position.y).toBeLessThan(asset.position.y);
+  });
+
+  it('places crosscut agent row below main chain agents', () => {
+    const nodes = [
+      makeSkillNode('butterfly-invest-trigger', 0),
+      makeSkillNode('butterfly-invest-variable', 0),
+      makeSkillNode('butterfly-invest-redteam', 0, { is_crosscut: true }),
+    ];
+
+    const result = GraphLayout.layout(nodes, []);
+
+    const mainNodes = result.skillNodes.filter(n => !(n.data as any).is_crosscut);
+    const crosscutNodes = result.skillNodes.filter(n => (n.data as any).is_crosscut);
 
     expect(crosscutNodes.length).toBe(1);
-    // 横切节点的 y 应该大于主链节点
     const maxMainY = Math.max(...mainNodes.map(n => n.position.y));
     expect(crosscutNodes[0].position.y).toBeGreaterThan(maxMainY);
-  });
-
-  it('places orchestrator above main chain', () => {
-    const nodes = [
-      makeNode('butterfly-invest', { name: 'Butterfly' }),
-      makeNode('butterfly-invest-trigger'),
-      makeNode('butterfly-invest-variable'),
-    ];
-    const edges = [
-      makeEdge('butterfly-invest-trigger', 'butterfly-invest-variable', 'sequence'),
-    ];
-
-    const result = GraphLayout.layout(nodes, edges);
-
-    const orchestrator = result.find(n => n.id === 'butterfly-invest')!;
-    const mainNodes = result.filter(n =>
-      n.id !== 'butterfly-invest' && !n.data.is_crosscut
-    );
-    const minMainY = Math.min(...mainNodes.map(n => n.position.y));
-
-    expect(orchestrator.position.y).toBeLessThan(minMainY);
-  });
-
-  it('maintains horizontal gap of 250px', () => {
-    const nodes = [
-      makeNode('a'),
-      makeNode('b'),
-      makeNode('c'),
-    ];
-    const edges = [
-      makeEdge('a', 'b', 'sequence'),
-      makeEdge('b', 'c', 'sequence'),
-    ];
-
-    const result = GraphLayout.layout(nodes, edges);
-
-    const a = result.find(n => n.id === 'a')!;
-    const b = result.find(n => n.id === 'b')!;
-    const c = result.find(n => n.id === 'c')!;
-
-    expect(b.position.x - a.position.x).toBe(250);
-    expect(c.position.x - b.position.x).toBe(250);
-  });
-
-  it('uses topological sort for node ordering', () => {
-    // Nodes passed in wrong order, but edges define correct order
-    const nodes = [
-      makeNode('c'),
-      makeNode('a'),
-      makeNode('b'),
-    ];
-    const edges = [
-      makeEdge('a', 'b', 'sequence'),
-      makeEdge('b', 'c', 'sequence'),
-    ];
-
-    const result = GraphLayout.layout(nodes, edges);
-
-    const a = result.find(n => n.id === 'a')!;
-    const b = result.find(n => n.id === 'b')!;
-    const c = result.find(n => n.id === 'c')!;
-
-    expect(a.position.x).toBeLessThan(b.position.x);
-    expect(b.position.x).toBeLessThan(c.position.x);
   });
 });

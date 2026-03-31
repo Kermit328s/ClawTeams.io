@@ -1,187 +1,138 @@
 // ============================================================
-// 工作流图布局算法 — 分层布局，节点位置计算
+// 工作流图布局算法 — 技能级小卡片链条布局
 // ============================================================
+//
+// 布局策略：
+//   - 同一 Agent 的技能卡片水平排列成一行
+//   - 不同 Agent 的行垂直排列
+//   - 主链顺序：Trigger → Variable → Industry → Asset
+//   - Redteam 在最底部
+//   - Agent 行的左侧预留 Agent 标签空间
+//
 
-import { WorkflowNode, WorkflowEdge } from './types';
+import { WorkflowNode, WorkflowEdge, AgentGroupNode } from './types';
 
-const HORIZONTAL_GAP = 250;
-const VERTICAL_GAP = 150;
-const CROSSCUT_OFFSET_Y = 300;
-const ORCHESTRATOR_OFFSET_Y = -150;
+// 技能卡片尺寸
+const CARD_WIDTH = 200;
+const CARD_HEIGHT = 170;
+const CARD_GAP_X = 40;           // 同一 Agent 内卡片间距
+const ROW_GAP_Y = 80;            // Agent 行之间间距
+const AGENT_LABEL_WIDTH = 60;    // Agent 标签左侧预留宽度
+const ROW_PADDING_X = 20;        // 行内左右 padding
+const ROW_PADDING_Y = 20;        // 行内上下 padding
+const START_X = 40;
+const START_Y = 40;
 
-/**
- * 图布局算法
- *
- * 布局规则:
- * - 拓扑排序确定水平顺序
- * - 主链节点水平排列（x 递增）
- * - 并行节点垂直排列（相同 x，不同 y）
- * - 横切节点（is_crosscut=true）放在主链下方
- * - 编排节点（orchestrator）放在顶部
- */
+/** 主链排列顺序 */
+const MAIN_CHAIN_ORDER = ['trigger', 'variable', 'industry', 'asset'];
+
 export class GraphLayout {
   /**
-   * 计算节点位置并返回更新后的节点列表
+   * 计算技能级节点布局
+   * 返回带有位置的节点列表 + Agent 分组节点
    */
-  static layout(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowNode[] {
-    if (nodes.length === 0) return nodes;
-
-    // 分类节点
-    const orchestratorNodes: WorkflowNode[] = [];
-    const crosscutNodes: WorkflowNode[] = [];
-    const mainNodes: WorkflowNode[] = [];
-
-    for (const node of nodes) {
-      if (node.data.is_crosscut) {
-        crosscutNodes.push(node);
-      } else if (this.isOrchestrator(node)) {
-        orchestratorNodes.push(node);
-      } else {
-        mainNodes.push(node);
-      }
-    }
-
-    // 对主链节点做拓扑排序
-    const sortedMain = this.topologicalSort(mainNodes, edges);
-
-    // 布局主链节点（水平排列）
-    const mainBaseY = 100;
-    for (let i = 0; i < sortedMain.length; i++) {
-      sortedMain[i].position = {
-        x: 100 + i * HORIZONTAL_GAP,
-        y: mainBaseY,
-      };
-    }
-
-    // 检测并行节点（没有直接前后关系的节点应该垂直排列）
-    this.adjustParallelNodes(sortedMain, edges);
-
-    // 布局编排节点（顶部居中）
-    const mainCenterX = sortedMain.length > 0
-      ? sortedMain[Math.floor(sortedMain.length / 2)].position.x
-      : 100;
-
-    for (let i = 0; i < orchestratorNodes.length; i++) {
-      orchestratorNodes[i].position = {
-        x: mainCenterX + i * HORIZONTAL_GAP,
-        y: mainBaseY + ORCHESTRATOR_OFFSET_Y,
-      };
-    }
-
-    // 布局横切节点（主链下方居中）
-    for (let i = 0; i < crosscutNodes.length; i++) {
-      crosscutNodes[i].position = {
-        x: mainCenterX + i * HORIZONTAL_GAP,
-        y: mainBaseY + CROSSCUT_OFFSET_Y,
-      };
-    }
-
-    return [...orchestratorNodes, ...sortedMain, ...crosscutNodes];
-  }
-
-  /**
-   * 拓扑排序（Kahn 算法）
-   * 按有向边确定节点顺序
-   */
-  private static topologicalSort(
+  static layout(
     nodes: WorkflowNode[],
-    edges: WorkflowEdge[],
-  ): WorkflowNode[] {
-    if (nodes.length <= 1) return [...nodes];
+    _edges: WorkflowEdge[],
+  ): { skillNodes: WorkflowNode[]; groupNodes: AgentGroupNode[] } {
+    if (nodes.length === 0) return { skillNodes: [], groupNodes: [] };
 
-    const nodeIds = new Set(nodes.map(n => n.id));
-
-    // 构建邻接表和入度表
-    const inDegree = new Map<string, number>();
-    const adjList = new Map<string, string[]>();
-
-    for (const id of nodeIds) {
-      inDegree.set(id, 0);
-      adjList.set(id, []);
-    }
-
-    // 只考虑 sequence 和 collaboration/data_flow 类型的有向边
-    for (const edge of edges) {
-      if (nodeIds.has(edge.source) && nodeIds.has(edge.target) && edge.source !== edge.target) {
-        adjList.get(edge.source)!.push(edge.target);
-        inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
-      }
-    }
-
-    // Kahn 算法
-    const queue: string[] = [];
-    for (const [id, deg] of inDegree) {
-      if (deg === 0) queue.push(id);
-    }
-
-    const sorted: string[] = [];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      sorted.push(current);
-
-      for (const neighbor of adjList.get(current) ?? []) {
-        const newDeg = (inDegree.get(neighbor) ?? 1) - 1;
-        inDegree.set(neighbor, newDeg);
-        if (newDeg === 0) {
-          queue.push(neighbor);
-        }
-      }
-    }
-
-    // 如果存在环，将剩余节点追加
-    for (const id of nodeIds) {
-      if (!sorted.includes(id)) {
-        sorted.push(id);
-      }
-    }
-
-    // 按排序结果返回节点
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    return sorted.map(id => nodeMap.get(id)!).filter(Boolean);
-  }
-
-  /**
-   * 调整并行节点位置
-   * 如果两个节点在同一层级（没有直接顺序关系），垂直排列
-   */
-  private static adjustParallelNodes(
-    nodes: WorkflowNode[],
-    edges: WorkflowEdge[],
-  ): void {
-    // 找出同一 x 位置的节点，检查是否应该分开
-    const byX = new Map<number, WorkflowNode[]>();
+    // 按 agent_id 分组
+    const agentGroups = new Map<string, WorkflowNode[]>();
     for (const node of nodes) {
-      const x = node.position.x;
-      const list = byX.get(x) ?? [];
+      const agentId = node.data.agent_id;
+      const list = agentGroups.get(agentId) ?? [];
       list.push(node);
-      byX.set(x, list);
+      agentGroups.set(agentId, list);
     }
 
-    for (const [, group] of byX) {
-      if (group.length > 1) {
-        // 多个节点在同一列，垂直分开
-        const baseY = group[0].position.y;
-        for (let i = 0; i < group.length; i++) {
-          group[i].position.y = baseY + i * VERTICAL_GAP;
+    // 确定行顺序：主链 → 其他非横切 → 横切（Redteam）
+    const orderedAgentIds: string[] = [];
+    const crosscutAgentIds: string[] = [];
+    const otherAgentIds: string[] = [];
+
+    // 先收集所有 agent_id
+    for (const agentId of agentGroups.keys()) {
+      const isCrosscut = agentGroups.get(agentId)![0]?.data.is_crosscut;
+      const mainIndex = MAIN_CHAIN_ORDER.findIndex(k => agentId.toLowerCase().includes(k));
+
+      if (isCrosscut) {
+        crosscutAgentIds.push(agentId);
+      } else if (mainIndex >= 0) {
+        // 将在排序时处理
+      } else {
+        otherAgentIds.push(agentId);
+      }
+    }
+
+    // 按主链顺序添加
+    for (const key of MAIN_CHAIN_ORDER) {
+      for (const agentId of agentGroups.keys()) {
+        if (agentId.toLowerCase().includes(key) && !crosscutAgentIds.includes(agentId)) {
+          if (!orderedAgentIds.includes(agentId)) {
+            orderedAgentIds.push(agentId);
+          }
         }
       }
     }
-  }
 
-  /**
-   * 判断是否为编排节点
-   */
-  private static isOrchestrator(node: WorkflowNode): boolean {
-    const id = node.id.toLowerCase();
-    const name = node.data.name.toLowerCase();
-    return (
-      // 不含 trigger/variable/industry/asset/redteam 等子代理后缀
-      (id.endsWith('-invest') || id === 'butterfly-invest') &&
-      !id.includes('-trigger') &&
-      !id.includes('-variable') &&
-      !id.includes('-industry') &&
-      !id.includes('-asset') &&
-      !id.includes('-redteam')
-    ) || /orchestrat|总控|编排/.test(name);
+    // 添加其他非横切
+    for (const agentId of otherAgentIds) {
+      if (!orderedAgentIds.includes(agentId)) {
+        orderedAgentIds.push(agentId);
+      }
+    }
+
+    // 最后添加横切
+    orderedAgentIds.push(...crosscutAgentIds);
+
+    // 计算每行的位置
+    const skillNodes: WorkflowNode[] = [];
+    const groupNodes: AgentGroupNode[] = [];
+    let currentY = START_Y;
+
+    for (const agentId of orderedAgentIds) {
+      const agentSkills = agentGroups.get(agentId);
+      if (!agentSkills || agentSkills.length === 0) continue;
+
+      // 按 skill_index 排序
+      agentSkills.sort((a, b) => a.data.skill_index - b.data.skill_index);
+
+      const firstSkill = agentSkills[0];
+      const skillCount = agentSkills.length;
+      const rowWidth = AGENT_LABEL_WIDTH + ROW_PADDING_X * 2 + skillCount * CARD_WIDTH + (skillCount - 1) * CARD_GAP_X;
+      const rowHeight = ROW_PADDING_Y * 2 + CARD_HEIGHT;
+
+      // 创建 Agent 分组节点（背景）
+      const groupNode: AgentGroupNode = {
+        id: `group-${agentId}`,
+        type: 'agent-group',
+        position: { x: START_X, y: currentY },
+        data: {
+          agent_id: agentId,
+          agent_name: firstSkill.data.agent_name,
+          agent_emoji: firstSkill.data.agent_emoji,
+          agent_color: firstSkill.data.agent_color,
+          is_crosscut: firstSkill.data.is_crosscut,
+          skill_count: skillCount,
+        },
+        style: { width: rowWidth, height: rowHeight },
+      };
+      groupNodes.push(groupNode);
+
+      // 布局该行的技能卡片
+      for (let i = 0; i < agentSkills.length; i++) {
+        const skill = agentSkills[i];
+        skill.position = {
+          x: START_X + AGENT_LABEL_WIDTH + ROW_PADDING_X + i * (CARD_WIDTH + CARD_GAP_X),
+          y: currentY + ROW_PADDING_Y,
+        };
+        skillNodes.push(skill);
+      }
+
+      currentY += rowHeight + ROW_GAP_Y;
+    }
+
+    return { skillNodes, groupNodes };
   }
 }

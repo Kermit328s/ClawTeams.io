@@ -1,5 +1,5 @@
 // ============================================================
-// 工作流图自动生成 — 从 md + 运行数据合并（Sprint 3 重构版）
+// 工作流图自动生成 — 技能级小卡片链条版本
 // ============================================================
 
 import { Database } from '../store/database';
@@ -26,12 +26,13 @@ interface DbAgent {
 }
 
 /**
- * 工作流图生成器（Sprint 3 版本）
+ * 工作流图生成器 — 技能级版本
  *
- * 使用三层架构:
- * 1. GraphExtractor — 从 md 文件提取静态关系
+ * 使用架构:
+ * 1. GraphExtractor — 从工作定义 md 提取技能链 + 静态关系
  * 2. RuntimeExtractor — 从运行时数据提取动态关系
- * 3. GraphMerger — 合并+去重+布局
+ * 3. GraphLayout — 技能卡片行布局
+ * 4. GraphMerger — 合并+去重+填充状态
  */
 export class WorkflowBuilder {
   private graphExtractor: GraphExtractor;
@@ -48,27 +49,43 @@ export class WorkflowBuilder {
   }
 
   /**
-   * 生成完整的工作流图（含位置、样式等 React Flow 字段）
+   * 生成完整的工作流图（技能级）
    */
   buildGraph(workspaceId: string): WorkflowGraph {
     // 1. 获取所有 Agent
     const agents = this.getAgents(workspaceId);
 
-    // 2. 从 md 文件提取静态关系
+    // 2. 构建别名映射（供后续解析使用）
     const clawId = this.getClawId(workspaceId);
-    const staticResult = this.graphExtractor.extractFromMdFiles(clawId, agents);
+    this.graphExtractor.buildAliasMap(agents);
 
-    // 3. 从运行时数据提取动态关系
+    // 3. 从工作定义提取技能链
+    const skillChains = this.graphExtractor.extractSkillChains(agents);
+
+    // 4. 从技能链生成节点和边
+    const { nodes: skillNodes, edges: skillEdges } = this.graphExtractor.buildSkillGraph(
+      skillChains,
+      agents,
+    );
+
+    // 5. 从运行时数据提取动态关系（Agent 级别，merger 会转换）
     const dynamicEdges = this.runtimeExtractor.extractAll(workspaceId);
 
-    // 4. 获取 Agent 实时状态
+    // 6. 计算布局
+    const { skillNodes: layoutNodes, groupNodes } = GraphLayout.layout(skillNodes, skillEdges);
+
+    // 7. 获取 Agent 实时状态
     const agentStatuses = this.getAgentStatuses(agents);
 
-    // 5. 合并生成最终图
-    const graph = this.graphMerger.merge(agents, staticResult, dynamicEdges, agentStatuses);
-
-    // 6. 计算布局
-    graph.nodes = GraphLayout.layout(graph.nodes, graph.edges);
+    // 8. 合并生成最终图
+    const graph = this.graphMerger.merge(
+      agents,
+      layoutNodes,
+      skillEdges,
+      groupNodes,
+      dynamicEdges,
+      agentStatuses,
+    );
 
     return graph;
   }
@@ -93,7 +110,7 @@ export class WorkflowBuilder {
   }
 
   /**
-   * 获取第一个 Claw ID（用于 md 解析上下文）
+   * 获取第一个 Claw ID
    */
   private getClawId(workspaceId: string): string {
     const claws = this.db.getClawsByWorkspaceId(workspaceId) as { claw_id: string }[];
@@ -107,13 +124,14 @@ export class WorkflowBuilder {
    */
   private getAgentStatuses(
     agents: AgentRegistration[],
-  ): Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number } }> {
-    const statuses = new Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number } }>();
+  ): Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number; today_tokens?: number; recent_10min_tokens?: number } }> {
+    const statuses = new Map<string, { status: 'idle' | 'running' | 'failed'; stats: { today_total: number; today_succeeded: number; today_failed: number; today_tokens?: number; recent_10min_tokens?: number } }>();
 
     for (const agent of agents) {
       try {
         const profile = this.db.getAgentProfile(agent.agent_id) as { status?: string } | undefined;
         const stats = this.db.getExecutionStats(agent.agent_id, 'today');
+        const recent10min = this.db.getRecentTokens(agent.agent_id, 10);
 
         statuses.set(agent.agent_id, {
           status: (profile?.status as 'idle' | 'running' | 'failed') ?? 'idle',
@@ -121,12 +139,14 @@ export class WorkflowBuilder {
             today_total: stats.total,
             today_succeeded: stats.succeeded,
             today_failed: stats.failed,
+            today_tokens: stats.total_tokens,
+            recent_10min_tokens: recent10min,
           },
         });
       } catch {
         statuses.set(agent.agent_id, {
           status: 'idle',
-          stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
+          stats: { today_total: 0, today_succeeded: 0, today_failed: 0, today_tokens: 0, recent_10min_tokens: 0 },
         });
       }
     }

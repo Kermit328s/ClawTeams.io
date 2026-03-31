@@ -5,9 +5,23 @@
 // ============================================================
 
 import WebSocket from 'ws';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const WS_URL = process.env.WS_URL ?? 'ws://localhost:3001/ws/hook';
-const CLAW_ID = process.env.CLAW_ID ?? 'mock-claw-001';
+
+// 自动读取真实 claw_id
+function getClawId(): string {
+  if (process.env.CLAW_ID) return process.env.CLAW_ID;
+  try {
+    const devicePath = path.join(process.env.HOME ?? '', '.openclaw', 'identity', 'device.json');
+    const device = JSON.parse(fs.readFileSync(devicePath, 'utf-8'));
+    return device.deviceId;
+  } catch {
+    return 'mock-claw-001';
+  }
+}
+const CLAW_ID = getClawId();
 
 // 模拟数据基于用户真实的 6 个 Agent
 const AGENTS = [

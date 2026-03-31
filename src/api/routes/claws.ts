@@ -6,16 +6,20 @@ import { FastifyInstance } from 'fastify';
 import { Database } from '../../store/database';
 
 export function registerClawsRoutes(app: FastifyInstance, db: Database): void {
-  // 列出工作空间下的龙虾
+  // 列出工作空间下的龙虾（含嵌套 agents）
   app.get('/api/v1/workspaces/:id/claws', async (request) => {
     const { id } = request.params as { id: string };
     // 阶段一简化：返回所有龙虾（或按 workspace_id 筛选）
-    const claws = db.getClawsByWorkspaceId(id);
+    let claws = db.getClawsByWorkspaceId(id);
     // 如果没有 workspace_id 关联的龙虾，返回所有
     if (claws.length === 0) {
-      return db.getAllClaws();
+      claws = db.getAllClaws();
     }
-    return claws;
+    // 为每只龙虾嵌套 agents 数组
+    return claws.map((claw: any) => ({
+      ...claw,
+      agents: db.getAgentsByClawId(claw.claw_id) ?? [],
+    }));
   });
 
   // 龙虾详情（含 agent 列表）

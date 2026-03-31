@@ -447,6 +447,133 @@ export class MdParser {
     };
   }
 
+  /**
+   * 提取技能链摘要 — 从工作定义 md 中提取结构化的技能链信息
+   */
+  extractSkillChain(content: string, agentId: string): import('./types').SkillChainSummary {
+    const sections = this.splitSections(content);
+
+    // 角色定位：第一段或"角色定位"段
+    let rolePositioning = '';
+    for (const s of sections) {
+      if (s.header.includes('角色定位') || s.header.includes('角色') || s.header.includes('定位')) {
+        // 取第一个非空段落
+        const para = s.content.split('\n').find(l => l.trim() && !l.trim().startsWith('#'));
+        if (para) rolePositioning = para.trim();
+        break;
+      }
+    }
+    if (!rolePositioning) {
+      // 取文件第一段
+      const firstPara = content.split('\n').find(l => l.trim() && !l.startsWith('#') && !l.startsWith('---'));
+      if (firstPara) rolePositioning = firstPara.trim();
+    }
+    // 截断到 100 字
+    if (rolePositioning.length > 100) rolePositioning = rolePositioning.slice(0, 100) + '...';
+
+    // 核心职责
+    const coreDuties: string[] = [];
+    for (const s of sections) {
+      const h = s.header.toLowerCase();
+      if (h.includes('核心职责') || h.includes('主要职责') || h.includes('职责') || h.includes('使命')) {
+        // 提取子标题作为职责
+        const subHeaders = s.content.match(/^###?\s+\d+\.\s+(.+)$/gm);
+        if (subHeaders) {
+          for (const sh of subHeaders) {
+            const m = sh.match(/###?\s+\d+\.\s+(.+)/);
+            if (m) coreDuties.push(m[1].trim());
+          }
+        }
+        if (coreDuties.length === 0) {
+          coreDuties.push(...this.extractListItems(s.content).slice(0, 4));
+        }
+      }
+    }
+
+    // 输入来源
+    const inputSources: string[] = [];
+    for (const s of sections) {
+      const h = s.header.toLowerCase();
+      if (h.includes('source') || h.includes('来源') || h.includes('feed') || h.includes('输入')) {
+        // 提取子标题
+        const subHeaders = s.content.match(/^###?\s+(.+)$/gm);
+        if (subHeaders) {
+          for (const sh of subHeaders) {
+            const m = sh.match(/###?\s+(.+)/);
+            if (m && !m[1].includes('特别规则')) inputSources.push(m[1].trim());
+          }
+        }
+        if (inputSources.length === 0) {
+          inputSources.push(...this.extractListItems(s.content).slice(0, 4));
+        }
+      }
+    }
+
+    // 输出对象
+    const outputObjects: string[] = [];
+    for (const s of sections) {
+      const h = s.header.toLowerCase();
+      if (h.includes('输出') || h.includes('output') || h.includes('产出')) {
+        const subHeaders = s.content.match(/^###?\s+\d+\.\s+(.+)$/gm);
+        if (subHeaders) {
+          for (const sh of subHeaders) {
+            const m = sh.match(/###?\s+\d+\.\s+(.+)/);
+            if (m) outputObjects.push(m[1].trim());
+          }
+        }
+        if (outputObjects.length === 0) {
+          outputObjects.push(...this.extractListItems(s.content).slice(0, 4));
+        }
+      }
+    }
+
+    // 交付给谁 — 从文本中提取 "交付给 xxx" / "推送给 xxx"
+    const deliversTo: string[] = [];
+    const deliverPatterns = [
+      /(?:交付|交给|推送给|传递给)\s*[`「]?([^`」\n,，。]+)[`」]?/g,
+      /butterfly-invest-(\w+)\s*(?:继续|分析|处理)/g,
+    ];
+    for (const p of deliverPatterns) {
+      let m: RegExpExecArray | null;
+      while ((m = p.exec(content)) !== null) {
+        const target = m[1].trim();
+        if (target && !deliversTo.includes(target)) deliversTo.push(target);
+      }
+    }
+
+    // 从谁接收 — 从文本中提取 "接收 xxx 的" / "来自 xxx"
+    const receivesFrom: string[] = [];
+    const receivePatterns = [
+      /(?:接收|来自|由)\s*[`「]?([^`」\n,，。]+?)[`」]?\s*(?:的|提供|交付)/g,
+    ];
+    for (const p of receivePatterns) {
+      let m: RegExpExecArray | null;
+      while ((m = p.exec(content)) !== null) {
+        const source = m[1].trim();
+        if (source && !receivesFrom.includes(source)) receivesFrom.push(source);
+      }
+    }
+
+    // 硬性边界
+    const hardBoundaries: string[] = [];
+    for (const s of sections) {
+      const h = s.header.toLowerCase();
+      if (h.includes('边界') || h.includes('boundary') || h.includes('红线') || h.includes('不负责') || h.includes('硬性')) {
+        hardBoundaries.push(...this.extractListItems(s.content).slice(0, 4));
+      }
+    }
+
+    return {
+      role_positioning: rolePositioning,
+      core_duties: coreDuties.slice(0, 4),
+      input_sources: inputSources.slice(0, 4),
+      output_objects: outputObjects.slice(0, 4),
+      delivers_to: deliversTo.slice(0, 3),
+      receives_from: receivesFrom.slice(0, 3),
+      hard_boundaries: hardBoundaries.slice(0, 3),
+    };
+  }
+
   private parseRedteamGovernanceBasic(content: string): Partial<import('./types').RedteamGovernance> {
     return {
       first_principle: '',

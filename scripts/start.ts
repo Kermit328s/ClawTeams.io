@@ -91,11 +91,19 @@ function registerClaw(db: Database, openclawDir: string): { clawId: string; agen
     });
   }
 
-  // 创建默认工作空间
+  // 创建默认工作空间，并关联 claw 的 workspace_id
   try {
     const workspaces = db.getWorkspaces();
+    let wsId: number;
     if (workspaces.length === 0) {
-      db.createWorkspace({ name: 'Default Workspace', owner_id: 0 });
+      const result = db.createWorkspace({ name: 'Default Workspace', owner_id: 0 });
+      wsId = result.id;
+    } else {
+      wsId = (workspaces[0] as any).id;
+    }
+    // 将龙虾关联到工作空间
+    if (registration.claw_id) {
+      db.rawRun('UPDATE claws SET workspace_id = ? WHERE claw_id = ?', String(wsId), registration.claw_id);
     }
   } catch {
     // ignore if workspace creation fails

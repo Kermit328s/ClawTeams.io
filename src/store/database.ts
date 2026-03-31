@@ -551,6 +551,16 @@ export class Database {
     };
   }
 
+  getRecentTokens(agentId: string, minutesAgo: number = 10): number {
+    const stmt = this.db.prepare(`
+      SELECT COALESCE(SUM(token_total), 0) as tokens
+      FROM executions
+      WHERE agent_id = ? AND started_at >= datetime('now', '-' || ? || ' minutes')
+    `);
+    const row = stmt.get(agentId, minutesAgo) as { tokens: number };
+    return row.tokens ?? 0;
+  }
+
   // ---- Artifact 查询 ----
 
   getArtifactsFiltered(filters: {

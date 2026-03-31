@@ -9,7 +9,7 @@ export type ClawStatus = 'online' | 'offline';
 export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout';
 export type ExecutionTrigger = 'user' | 'cron' | 'heartbeat' | 'subagent' | 'unknown';
 export type ArtifactType = 'document' | 'code' | 'data' | 'media' | 'config';
-export type EdgeType = 'collaboration' | 'subagent' | 'data_flow' | 'sequence';
+export type EdgeType = 'internal' | 'cross_agent' | 'crosscut' | 'collaboration' | 'subagent' | 'data_flow' | 'sequence';
 export type CoreFileType = 'soul' | 'identity' | 'agents' | 'tools' | 'user' | 'heartbeat';
 
 // ---- Claw ----
@@ -43,37 +43,63 @@ export interface Agent {
   has_file_change?: boolean;
 }
 
-// ---- Workflow Graph (React Flow compatible) ----
+// ---- Workflow Graph (React Flow compatible) — 技能级 ----
 
-export interface WorkflowNodeData {
+export interface SkillNodeData {
+  [key: string]: unknown;
+  skill_id: string;
+  agent_id: string;
+  agent_emoji: string;
+  agent_name: string;
+  skill_name: string;
+  skill_icon: string;
+  skill_index: number;
+  skill_total: number;
+  status: 'idle' | 'running' | 'completed';
+  is_crosscut: boolean;
+  agent_color: string;
+  latest_artifact?: {
+    name: string;
+    type: string;
+    preview: string;
+    timestamp: string;
+  };
+  execution_stats: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    tokens: number;
+  };
+}
+
+export interface AgentGroupData {
   [key: string]: unknown;
   agent_id: string;
-  name: string;
-  emoji: string;
-  role: string;
-  status: AgentStatus;
-  model: string;
+  agent_name: string;
+  agent_emoji: string;
+  agent_color: string;
   is_crosscut: boolean;
-  execution_stats: {
-    today_total: number;
-    today_succeeded: number;
-    today_failed: number;
-  };
-  has_file_change?: boolean;
+  skill_count: number;
 }
 
 export interface WorkflowNode {
   id: string;
-  type: 'agent';
+  type: 'skill' | 'agent-group';
   position: { x: number; y: number };
-  data: WorkflowNodeData;
+  data: SkillNodeData | AgentGroupData;
+  parentId?: string;
+  style?: Record<string, unknown>;
 }
+
+/** Legacy alias for backward compatibility */
+export type WorkflowNodeData = SkillNodeData;
 
 export interface WorkflowEdgeData {
   [key: string]: unknown;
-  label: string;
-  strength: number;
-  source_info: string;
+  label?: string;
+  strength?: number;
+  source_info?: string;
+  last_transfer?: string;
 }
 
 export interface WorkflowEdge {
@@ -190,6 +216,7 @@ export interface ApiResponse<T> {
 
 export interface Workspace {
   workspace_id: string;
+  id?: number;
   name: string;
-  claws: Claw[];
+  claws?: Claw[];
 }

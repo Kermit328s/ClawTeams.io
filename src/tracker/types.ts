@@ -156,6 +156,17 @@ export interface AgentWorkDefinition {
   hard_boundaries: string[];
 }
 
+// 技能链摘要（用于节点展示）
+export interface SkillChainSummary {
+  role_positioning: string;        // 一句话角色定位
+  core_duties: string[];           // 核心职责（最多4条）
+  input_sources: string[];         // 输入来源（简要）
+  output_objects: string[];        // 输出对象名
+  delivers_to: string[];           // 交付给谁（agent_id 或角色名）
+  receives_from: string[];         // 从谁接收
+  hard_boundaries: string[];       // 硬性边界
+}
+
 export interface RedteamGovernance {
   first_principle: string;
   authority: { has: string; not_has: string };

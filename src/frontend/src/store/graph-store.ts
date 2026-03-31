@@ -1,5 +1,5 @@
 // ============================================================
-// 工作流图 Store
+// 工作流图 Store — 技能级版本
 // ============================================================
 
 import { create } from 'zustand';
@@ -24,19 +24,26 @@ export const useGraphStore = create<GraphState>((set) => ({
 
   updateNodeStatus: (agentId, status) =>
     set((state) => ({
-      nodes: state.nodes.map((n) =>
-        n.data.agent_id === agentId
-          ? { ...n, data: { ...n.data, status } }
-          : n,
-      ),
+      nodes: state.nodes.map((n) => {
+        // 只更新技能节点，不更新 group 节点
+        if (n.type !== 'skill') return n;
+        const data = n.data as { agent_id?: string; status?: string };
+        if (data.agent_id === agentId) {
+          return { ...n, data: { ...n.data, status } };
+        }
+        return n;
+      }),
     })),
 
   setNodeFileChanged: (agentId, changed) =>
     set((state) => ({
-      nodes: state.nodes.map((n) =>
-        n.data.agent_id === agentId
-          ? { ...n, data: { ...n.data, has_file_change: changed } }
-          : n,
-      ),
+      nodes: state.nodes.map((n) => {
+        if (n.type !== 'skill') return n;
+        const data = n.data as { agent_id?: string };
+        if (data.agent_id === agentId) {
+          return { ...n, data: { ...n.data, has_file_change: changed } };
+        }
+        return n;
+      }),
     })),
 }));

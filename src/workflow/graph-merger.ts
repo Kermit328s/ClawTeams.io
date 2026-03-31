@@ -1,9 +1,16 @@
 // ============================================================
-// 工作流图合并器 — 合并静态 + 动态关系，生成最终图
+// 工作流图合并器 — 技能级节点版本
 // ============================================================
 
 import { AgentRegistration } from '../tracker/types';
-import { WorkflowNode, WorkflowEdge, WorkflowGraph, EDGE_STYLES } from './types';
+import {
+  WorkflowNode,
+  WorkflowEdge,
+  WorkflowGraph,
+  AgentGroupNode,
+  AgentSkillChain,
+  EDGE_STYLES,
+} from './types';
 
 interface AgentStatus {
   status: 'idle' | 'running' | 'failed';
@@ -11,175 +18,154 @@ interface AgentStatus {
     today_total: number;
     today_succeeded: number;
     today_failed: number;
+    today_tokens?: number;
+    recent_10min_tokens?: number;
   };
 }
 
 /**
- * 合并静态 md 解析结果和动态运行时数据，生成最终 WorkflowGraph
+ * 合并技能级节点和边，生成最终 WorkflowGraph
  */
 export class GraphMerger {
   /**
-   * 合并生成最终工作流图
+   * 合并生成最终工作流图（技能级）
    */
   merge(
-    agents: AgentRegistration[],
-    staticResult: { nodes: Partial<WorkflowNode>[]; edges: Partial<WorkflowEdge>[] },
+    _agents: AgentRegistration[],
+    skillNodes: WorkflowNode[],
+    skillEdges: WorkflowEdge[],
+    groupNodes: AgentGroupNode[],
     dynamicEdges: Partial<WorkflowEdge>[],
     agentStatuses: Map<string, AgentStatus>,
   ): WorkflowGraph {
-    // 1. 合并节点：确保所有 Agent 都有对应节点
-    const nodes = this.buildNodes(agents, staticResult.nodes, agentStatuses);
+    // 1. 填充实时状态到技能节点
+    for (const node of skillNodes) {
+      const agentStatus = agentStatuses.get(node.data.agent_id);
+      if (agentStatus) {
+        // 如果 agent 正在运行，将最后一个技能标记为 running
+        if (agentStatus.status === 'running') {
+          // 找该 Agent 的所有技能
+          const sameAgentSkills = skillNodes.filter(n => n.data.agent_id === node.data.agent_id);
+          const maxIndex = Math.max(...sameAgentSkills.map(n => n.data.skill_index));
+          if (node.data.skill_index === maxIndex) {
+            node.data.status = 'running';
+          } else {
+            node.data.status = 'completed';
+          }
+        }
 
-    // 2. 合并边：静态边 + 动态边
-    const allEdges = [...staticResult.edges, ...dynamicEdges];
-    const edges = this.deduplicateEdges(allEdges);
+        // 分配 token 统计（均分到各技能）
+        const agentSkillCount = skillNodes.filter(n => n.data.agent_id === node.data.agent_id).length;
+        if (agentSkillCount > 0) {
+          node.data.execution_stats = {
+            total: Math.ceil(agentStatus.stats.today_total / agentSkillCount),
+            succeeded: Math.ceil(agentStatus.stats.today_succeeded / agentSkillCount),
+            failed: Math.ceil(agentStatus.stats.today_failed / agentSkillCount),
+            tokens: Math.ceil((agentStatus.stats.today_tokens || 0) / agentSkillCount),
+          };
+        }
+      }
+    }
+
+    // 2. 合并所有边
+    const allEdges = [...skillEdges];
+
+    // 将动态边（Agent 级）转换为技能级连接
+    for (const dynEdge of dynamicEdges) {
+      if (!dynEdge.source || !dynEdge.target) continue;
+      // 动态边连接的是 agent_id，需要找到对应的最后技能 → 第一技能
+      const sourceSkills = skillNodes
+        .filter(n => n.data.agent_id === dynEdge.source)
+        .sort((a, b) => b.data.skill_index - a.data.skill_index);
+      const targetSkills = skillNodes
+        .filter(n => n.data.agent_id === dynEdge.target)
+        .sort((a, b) => a.data.skill_index - b.data.skill_index);
+
+      if (sourceSkills.length > 0 && targetSkills.length > 0) {
+        const sourceSkillId = sourceSkills[0].id;
+        const targetSkillId = targetSkills[0].id;
+        const edgeId = `dynamic-${sourceSkillId}-${targetSkillId}-${dynEdge.type || 'data_flow'}`;
+
+        // 避免与已有 cross_agent 边重复
+        const existingCross = allEdges.find(
+          e => e.source === sourceSkillId && e.target === targetSkillId,
+        );
+        if (!existingCross) {
+          allEdges.push({
+            id: edgeId,
+            source: sourceSkillId,
+            target: targetSkillId,
+            type: (dynEdge.type as WorkflowEdge['type']) || 'data_flow',
+            data: {
+              label: dynEdge.data?.label ?? '',
+              strength: dynEdge.data?.strength ?? 1,
+              source_info: dynEdge.data?.source_info ?? 'dynamic',
+            },
+            animated: dynEdge.animated,
+            style: dynEdge.style,
+          });
+        }
+      }
+    }
 
     // 3. 给边添加样式
-    for (const edge of edges) {
+    for (const edge of allEdges) {
       if (!edge.style) {
         const typeStyle = EDGE_STYLES[edge.type];
         if (typeStyle) {
-          edge.style = { stroke: typeStyle.stroke, strokeWidth: typeStyle.strokeWidth };
+          edge.style = {
+            stroke: typeStyle.stroke,
+            strokeWidth: typeStyle.strokeWidth,
+            ...(typeStyle.dashArray ? { strokeDasharray: typeStyle.dashArray } : {}),
+          };
         }
       }
-      // 动态边（subagent）添加动画
-      if (edge.type === 'subagent') {
+      // cross_agent 边添加动画
+      if (edge.type === 'cross_agent') {
         edge.animated = true;
       }
     }
 
-    // 4. 统计
-    const staticEdgeCount = staticResult.edges.length;
-    const dynamicEdgeCount = dynamicEdges.length;
+    // 4. 去重
+    const dedupedEdges = this.deduplicateEdges(allEdges);
+
+    // 5. 统计
     const dataSources = new Set<string>();
-    for (const e of edges) {
-      if (e.data?.source_info) {
-        dataSources.add(e.data.source_info);
-      }
+    for (const e of dedupedEdges) {
+      if (e.data?.source_info) dataSources.add(e.data.source_info);
     }
 
     return {
-      nodes,
-      edges,
+      nodes: [...groupNodes, ...skillNodes],
+      edges: dedupedEdges,
       metadata: {
         generated_at: Date.now(),
-        static_edge_count: staticEdgeCount,
-        dynamic_edge_count: dynamicEdgeCount,
+        static_edge_count: skillEdges.length,
+        dynamic_edge_count: dynamicEdges.length,
         data_sources: Array.from(dataSources),
       },
     };
   }
 
   /**
-   * 构建完整的节点列表
-   * 确保所有注册的 Agent 都有节点，即使 md 中没有提到
-   */
-  private buildNodes(
-    agents: AgentRegistration[],
-    staticNodes: Partial<WorkflowNode>[],
-    agentStatuses: Map<string, AgentStatus>,
-  ): WorkflowNode[] {
-    const nodeMap = new Map<string, WorkflowNode>();
-
-    // 先从静态节点填充
-    for (const sNode of staticNodes) {
-      if (!sNode.data?.agent_id) continue;
-      const id = sNode.data.agent_id;
-      nodeMap.set(id, {
-        id,
-        type: 'agent',
-        position: sNode.position ?? { x: 0, y: 0 },
-        data: {
-          agent_id: id,
-          name: sNode.data.name ?? id,
-          emoji: sNode.data.emoji ?? '',
-          role: sNode.data.role ?? '',
-          status: 'idle',
-          model: sNode.data.model ?? '',
-          is_crosscut: sNode.data.is_crosscut ?? false,
-          execution_stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
-        },
-      });
-    }
-
-    // 确保所有注册 Agent 都有节点
-    for (const agent of agents) {
-      if (!nodeMap.has(agent.agent_id)) {
-        const isCrosscut = /redteam/i.test(agent.agent_id);
-        nodeMap.set(agent.agent_id, {
-          id: agent.agent_id,
-          type: 'agent',
-          position: { x: 0, y: 0 },
-          data: {
-            agent_id: agent.agent_id,
-            name: agent.name,
-            emoji: agent.emoji,
-            role: '',
-            status: 'idle',
-            model: agent.model,
-            is_crosscut: isCrosscut,
-            execution_stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
-          },
-        });
-      }
-    }
-
-    // 填充实时状态
-    for (const [agentId, status] of agentStatuses.entries()) {
-      const node = nodeMap.get(agentId);
-      if (node) {
-        node.data.status = status.status;
-        node.data.execution_stats = status.stats;
-      }
-    }
-
-    return Array.from(nodeMap.values());
-  }
-
-  /**
    * 去重并合并边
-   * 相同 source -> target 和 type 的边合并，strength 累加
    */
-  deduplicateEdges(edges: Partial<WorkflowEdge>[]): WorkflowEdge[] {
+  deduplicateEdges(edges: WorkflowEdge[]): WorkflowEdge[] {
     const edgeMap = new Map<string, WorkflowEdge>();
 
     for (const edge of edges) {
-      if (!edge.source || !edge.target || !edge.type) continue;
-
+      if (!edge.source || !edge.target) continue;
       const key = `${edge.source}->${edge.target}:${edge.type}`;
       const existing = edgeMap.get(key);
 
       if (existing) {
-        // 合并：累加 strength，保留更好的 label
         existing.data.strength += edge.data?.strength ?? 1;
-        if (edge.data?.label && edge.data.label !== edge.type) {
-          // 如果新 label 更具体，用新的
-          if (edge.data.label.length > existing.data.label.length) {
-            existing.data.label = edge.data.label;
-          }
+        if (edge.data?.label && edge.data.label.length > existing.data.label.length) {
+          existing.data.label = edge.data.label;
         }
-        // 如果有动画属性，保留
-        if (edge.animated) {
-          existing.animated = true;
-        }
-        // 合并 source_info
-        if (edge.data?.source_info && !existing.data.source_info.includes(edge.data.source_info)) {
-          existing.data.source_info += `, ${edge.data.source_info}`;
-        }
+        if (edge.animated) existing.animated = true;
       } else {
-        edgeMap.set(key, {
-          id: edge.id ?? `edge-${edge.source}-${edge.target}-${edge.type}`,
-          source: edge.source,
-          target: edge.target,
-          type: edge.type,
-          data: {
-            label: edge.data?.label ?? edge.type,
-            strength: edge.data?.strength ?? 1,
-            source_info: edge.data?.source_info ?? 'unknown',
-          },
-          animated: edge.animated,
-          style: edge.style,
-        });
+        edgeMap.set(key, { ...edge });
       }
     }
 

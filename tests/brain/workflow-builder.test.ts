@@ -1,5 +1,5 @@
 // ============================================================
-// 工作流图生成测试（Sprint 3 更新版）
+// 工作流图生成测试 — 技能级版本
 // ============================================================
 
 import * as path from 'path';
@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import { Database } from '../../src/store/database';
 import { MdParser } from '../../src/tracker/md-parser';
 import { WorkflowBuilder } from '../../src/brain/workflow-builder';
+import { SkillNodeData } from '../../src/workflow/types';
 
 const TEST_DB_PATH = path.join(__dirname, '..', '..', 'data', 'test-workflow.sqlite');
 
@@ -62,75 +63,48 @@ afterAll(() => {
 });
 
 describe('WorkflowBuilder', () => {
-  it('generates nodes from agents', () => {
+  it('generates skill nodes from agents', () => {
     const graph = builder.buildGraph('');
-    expect(graph.nodes.length).toBeGreaterThanOrEqual(3);
-    const nodeIds = graph.nodes.map(n => n.data.agent_id);
-    expect(nodeIds).toContain('wf-agent-a');
-    expect(nodeIds).toContain('wf-agent-b');
-    expect(nodeIds).toContain('wf-agent-c');
+    // Should have both skill nodes and group nodes
+    const skillNodes = graph.nodes.filter(n => n.type === 'skill');
+    expect(skillNodes.length).toBeGreaterThanOrEqual(3); // at least 1 skill per agent
+
+    // All agents should have at least one skill node
+    const agentIds = new Set(skillNodes.map(n => (n.data as SkillNodeData).agent_id));
+    expect(agentIds.has('wf-agent-a')).toBe(true);
+    expect(agentIds.has('wf-agent-b')).toBe(true);
+    expect(agentIds.has('wf-agent-c')).toBe(true);
   });
 
-  it('node has correct React Flow structure', () => {
+  it('skill node has correct React Flow structure', () => {
     const graph = builder.buildGraph('');
-    const node = graph.nodes.find(n => n.data.agent_id === 'wf-agent-a');
+    const skillNodes = graph.nodes.filter(n => n.type === 'skill');
+    const node = skillNodes.find(n => (n.data as SkillNodeData).agent_id === 'wf-agent-a');
     expect(node).toBeDefined();
-    expect(node!.id).toBe('wf-agent-a');
-    expect(node!.type).toBe('agent');
+    expect(node!.type).toBe('skill');
     expect(node!.position).toBeDefined();
     expect(node!.position.x).toBeDefined();
     expect(node!.position.y).toBeDefined();
-    expect(node!.data.name).toBe('Agent A');
-    expect(node!.data.emoji).toBe('🅰️');
-    expect(node!.data.status).toBeDefined();
-    expect(node!.data.execution_stats).toBeDefined();
+
+    const data = node!.data as SkillNodeData;
+    expect(data.agent_name).toBe('Agent A');
+    expect(data.agent_emoji).toBe('🅰️');
+    expect(data.skill_name).toBeDefined();
+    expect(data.status).toBeDefined();
+    expect(data.execution_stats).toBeDefined();
   });
 
-  it('includes dynamic relations as edges', () => {
-    // 添加关系
-    db.upsertAgentRelation({
-      source_agent_id: 'wf-agent-a',
-      target_agent_id: 'wf-agent-b',
-      relation_type: 'collaboration',
-      source_info: 'A sends data to B',
-    });
-
-    db.upsertAgentRelation({
-      source_agent_id: 'wf-agent-b',
-      target_agent_id: 'wf-agent-c',
-      relation_type: 'subagent',
-      source_info: 'B spawns C',
-    });
-
+  it('generates group nodes for agent rows', () => {
     const graph = builder.buildGraph('');
-    expect(graph.edges.length).toBeGreaterThanOrEqual(2);
-
-    const edgeAB = graph.edges.find(e => e.source === 'wf-agent-a' && e.target === 'wf-agent-b');
-    expect(edgeAB).toBeDefined();
-    expect(edgeAB!.type).toBe('collaboration');
-    expect(edgeAB!.data.label).toBe('A sends data to B');
-
-    const edgeBC = graph.edges.find(e => e.source === 'wf-agent-b' && e.target === 'wf-agent-c');
-    expect(edgeBC).toBeDefined();
-    expect(edgeBC!.type).toBe('subagent');
+    const groupNodes = graph.nodes.filter(n => n.type === 'agent-group');
+    expect(groupNodes.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('merges static and dynamic edges', () => {
-    // 重复添加同一关系应该合并
-    db.upsertAgentRelation({
-      source_agent_id: 'wf-agent-a',
-      target_agent_id: 'wf-agent-b',
-      relation_type: 'collaboration',
-    });
-
+  it('generates internal edges within same agent', () => {
     const graph = builder.buildGraph('');
-    // 同一对 agent 同类型关系只应有一条边
-    const edgesAB = graph.edges.filter(
-      e => e.source === 'wf-agent-a' && e.target === 'wf-agent-b' && e.type === 'collaboration'
-    );
-    expect(edgesAB.length).toBe(1);
-    // strength 应该增加（upsertAgentRelation 自动 +1）
-    expect(edgesAB[0].data.strength).toBeGreaterThanOrEqual(2);
+    const internalEdges = graph.edges.filter(e => e.type === 'internal');
+    // Each agent with default 3 skills should have 2 internal edges
+    expect(internalEdges.length).toBeGreaterThanOrEqual(2);
   });
 
   it('returns graph with metadata', () => {
@@ -143,7 +117,6 @@ describe('WorkflowBuilder', () => {
   });
 
   it('returns empty edges when no relations exist', () => {
-    // 为新的测试 claw 创建一个隔离环境
     const isolatedDb = new Database(path.join(__dirname, '..', '..', 'data', 'test-wf-isolated.sqlite'));
     const isolatedBuilder = new WorkflowBuilder(isolatedDb, new MdParser());
 
@@ -159,8 +132,11 @@ describe('WorkflowBuilder', () => {
     });
 
     const graph = isolatedBuilder.buildGraph('');
-    expect(graph.nodes.length).toBeGreaterThanOrEqual(1);
-    expect(graph.edges.length).toBe(0);
+    const skillNodes = graph.nodes.filter(n => n.type === 'skill');
+    expect(skillNodes.length).toBeGreaterThanOrEqual(1);
+    // Only internal edges, no cross-agent edges
+    const crossEdges = graph.edges.filter(e => e.type === 'cross_agent' || e.type === 'crosscut');
+    expect(crossEdges.length).toBe(0);
 
     isolatedDb.close();
     const isoDbPath = path.join(__dirname, '..', '..', 'data', 'test-wf-isolated.sqlite');

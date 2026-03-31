@@ -29,10 +29,17 @@ const App: React.FC = () => {
         const ws = (workspaces as Workspace[])[0];
         if (!ws) return;
 
-        setWorkspaceId(ws.workspace_id);
+        // API now returns workspace_id (mapped from DB id)
+        const wsId = ws.workspace_id ?? String((ws as any).id);
+        setWorkspaceId(wsId);
 
-        return api.getClaws(ws.workspace_id).then((claws) => {
-          setClaws(claws as Claw[]);
+        return api.getClaws(wsId).then((claws) => {
+          // API now returns claws with nested agents array
+          const clawList = (claws as Claw[]).map((c) => ({
+            ...c,
+            agents: c.agents ?? [],
+          }));
+          setClaws(clawList);
         });
       })
       .catch((err) => {

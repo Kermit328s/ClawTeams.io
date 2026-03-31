@@ -53,7 +53,7 @@ export const useClawStore = create<ClawState>((set, get) => ({
     set((state) => ({
       claws: state.claws.map((c) => ({
         ...c,
-        agents: c.agents.map((a) =>
+        agents: (c.agents ?? []).map((a) =>
           a.agent_id === agentId
             ? { ...a, status, current_task: currentTask ?? a.current_task }
             : a,
@@ -65,7 +65,7 @@ export const useClawStore = create<ClawState>((set, get) => ({
     set((state) => ({
       claws: state.claws.map((c) => ({
         ...c,
-        agents: c.agents.map((a) =>
+        agents: (c.agents ?? []).map((a) =>
           a.agent_id === agentId ? { ...a, has_file_change: changed } : a,
         ),
       })),
@@ -77,11 +77,11 @@ export const useClawStore = create<ClawState>((set, get) => ({
 
   getAgent: (agentId) => {
     for (const claw of get().claws) {
-      const agent = claw.agents.find((a) => a.agent_id === agentId);
+      const agent = (claw.agents ?? []).find((a) => a.agent_id === agentId);
       if (agent) return agent;
     }
     return undefined;
   },
 
-  getAllAgents: () => get().claws.flatMap((c) => c.agents),
+  getAllAgents: () => get().claws.flatMap((c) => c.agents ?? []),
 }));

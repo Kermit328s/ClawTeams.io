@@ -11,6 +11,10 @@ import {
   WorkflowNode,
   WorkflowEdge,
   AgentAlias,
+  AgentSkillChain,
+  ExtractedSkill,
+  AGENT_COLORS,
+  SKILL_ICONS,
 } from './types';
 
 interface DbCoreFile {
@@ -277,6 +281,49 @@ export class GraphExtractor {
       }
     }
 
+    // 5. 编排者与所有 Agent 的关系
+    // 总控编排代理 = butterfly-invest，它管理所有子 Agent
+    for (const node of nodes) {
+      if (this.isOrchestrator(node.name) && node.agent_id) {
+        // 编排者向所有主链 Agent 下发任务
+        for (const other of nodes) {
+          if (other.agent_id && other.agent_id !== node.agent_id && !other.is_crosscut) {
+            relations.push({
+              from: node.agent_id,
+              to: other.agent_id,
+              relation: '任务编排',
+              type: 'collaboration',
+              source_file: sourceFile,
+            });
+          }
+        }
+        // 所有主链 Agent 向编排者汇报结果
+        for (const other of nodes) {
+          if (other.agent_id && other.agent_id !== node.agent_id && !other.is_crosscut) {
+            relations.push({
+              from: other.agent_id,
+              to: node.agent_id,
+              relation: '结果汇总',
+              type: 'data_flow',
+              source_file: sourceFile,
+            });
+          }
+        }
+        // 红队挑战结果也返回编排者
+        for (const other of nodes) {
+          if (other.is_crosscut && other.agent_id) {
+            relations.push({
+              from: other.agent_id,
+              to: node.agent_id,
+              relation: '挑战结果',
+              type: 'data_flow',
+              source_file: sourceFile,
+            });
+          }
+        }
+      }
+    }
+
     return { nodes, relations };
   }
 
@@ -491,6 +538,286 @@ export class GraphExtractor {
   }
 
   // ================================================================
+  // 技能链提取 — 从工作定义 md 提取每个 Agent 的技能列表
+  // ================================================================
+
+  /**
+   * 从所有 Agent 的工作定义中提取技能链
+   */
+  extractSkillChains(
+    agents: AgentRegistration[],
+  ): AgentSkillChain[] {
+    const chains: AgentSkillChain[] = [];
+    const coreFiles = this.db.getCoreFiles() as DbCoreFile[];
+
+    for (const agent of agents) {
+      // 在 core_files 中找该 Agent 的工作定义
+      const workDef = coreFiles.find(
+        f => f.agent_id === agent.agent_id && f.file_path.includes('工作定义'),
+      );
+
+      let skills: ExtractedSkill[];
+      if (workDef?.current_content) {
+        skills = this.extractSkillsFromWorkDef(workDef.current_content, agent.agent_id);
+      } else {
+        // 没有工作定义，生成默认技能
+        skills = this.getDefaultSkills(agent.agent_id);
+      }
+
+      const isCrosscut = /redteam/i.test(agent.agent_id);
+      chains.push({
+        agent_id: agent.agent_id,
+        agent_name: agent.name,
+        agent_emoji: agent.emoji,
+        is_crosscut: isCrosscut,
+        skills,
+      });
+    }
+
+    return chains;
+  }
+
+  /**
+   * 从工作定义 md 中提取技能列表
+   * 解析"核心职责"段落下的子标题作为技能名
+   */
+  private extractSkillsFromWorkDef(content: string, agentId: string): ExtractedSkill[] {
+    const skills: ExtractedSkill[] = [];
+
+    // 找到"核心职责"段落
+    const coreSection = content.match(
+      /##\s*(?:一、)?核心职责\s*\n([\s\S]*?)(?=\n##\s*(?:二|三|四|五|六)|---\s*$|$)/,
+    );
+
+    if (coreSection) {
+      // 提取子标题：### 1. 发现源头信号
+      const subHeaders = coreSection[1].matchAll(/###\s*\d+\.\s*(.+)/g);
+      let index = 0;
+      for (const match of subHeaders) {
+        const skillName = match[1].trim();
+        const icon = this.guessSkillIcon(skillName);
+        skills.push({
+          skill_name: skillName,
+          skill_icon: icon,
+          skill_index: index,
+        });
+        index++;
+      }
+    }
+
+    // 如果没有找到技能，用"输出结构"段落中的子标题
+    if (skills.length === 0) {
+      const outputSection = content.match(
+        /##\s*(?:四、)?输出结构\s*\n([\s\S]*?)(?=\n##\s*(?:五|六)|---\s*$|$)/,
+      );
+      if (outputSection) {
+        const subHeaders = outputSection[1].matchAll(/###\s*\d+\.\s*(.+)/g);
+        let index = 0;
+        for (const match of subHeaders) {
+          skills.push({
+            skill_name: match[1].trim(),
+            skill_icon: this.guessSkillIcon(match[1].trim()),
+            skill_index: index,
+          });
+          index++;
+        }
+      }
+    }
+
+    // 最后兜底
+    if (skills.length === 0) {
+      return this.getDefaultSkills(agentId);
+    }
+
+    return skills;
+  }
+
+  /**
+   * 根据技能名猜测图标
+   */
+  private guessSkillIcon(skillName: string): string {
+    for (const [keyword, icon] of Object.entries(SKILL_ICONS)) {
+      if (skillName.includes(keyword)) return icon;
+    }
+    return '⚡';
+  }
+
+  /**
+   * 获取 Agent 的颜色
+   */
+  getAgentColor(agentId: string): string {
+    const id = agentId.toLowerCase();
+    for (const [key, color] of Object.entries(AGENT_COLORS)) {
+      if (id.includes(key)) return color;
+    }
+    return AGENT_COLORS.default;
+  }
+
+  /**
+   * 为没有工作定义的 Agent 生成默认技能
+   */
+  private getDefaultSkills(agentId: string): ExtractedSkill[] {
+    // 根据已知 Agent 返回合理默认值
+    const id = agentId.toLowerCase();
+
+    if (id.includes('trigger')) {
+      return [
+        { skill_name: '发现源头信号', skill_icon: '🔍', skill_index: 0 },
+        { skill_name: '进行初步筛选', skill_icon: '🔬', skill_index: 1 },
+        { skill_name: '形成触发假设', skill_icon: '💡', skill_index: 2 },
+        { skill_name: '交付候选主题', skill_icon: '📋', skill_index: 3 },
+      ];
+    }
+    if (id.includes('variable')) {
+      return [
+        { skill_name: '识别候选变量', skill_icon: '📥', skill_index: 0 },
+        { skill_name: '区分变量层级', skill_icon: '🔎', skill_index: 1 },
+        { skill_name: '解释放大机制', skill_icon: '⚙️', skill_index: 2 },
+        { skill_name: '交付变量卡', skill_icon: '📋', skill_index: 3 },
+      ];
+    }
+    if (id.includes('industry')) {
+      return [
+        { skill_name: '分析产业链结构', skill_icon: '📥', skill_index: 0 },
+        { skill_name: '分析供需与议价权', skill_icon: '🔗', skill_index: 1 },
+        { skill_name: '分析利润池迁移', skill_icon: '💰', skill_index: 2 },
+        { skill_name: '交付产业结构卡', skill_icon: '📋', skill_index: 3 },
+      ];
+    }
+    if (id.includes('asset')) {
+      return [
+        { skill_name: '识别直接受益资产', skill_icon: '📥', skill_index: 0 },
+        { skill_name: '识别二阶与排除伪受益', skill_icon: '🗺️', skill_index: 1 },
+        { skill_name: '构建候选资产池', skill_icon: '📊', skill_index: 2 },
+        { skill_name: '交付资产清单', skill_icon: '📋', skill_index: 3 },
+      ];
+    }
+    if (id.includes('redteam')) {
+      return [
+        { skill_name: '逐层挑战', skill_icon: '🔍', skill_index: 0 },
+        { skill_name: '整链挑战', skill_icon: '📝', skill_index: 1 },
+        { skill_name: '输出挑战报告', skill_icon: '📄', skill_index: 2 },
+      ];
+    }
+
+    // 通用默认
+    return [
+      { skill_name: '接收输入', skill_icon: '📥', skill_index: 0 },
+      { skill_name: '处理任务', skill_icon: '⚙️', skill_index: 1 },
+      { skill_name: '输出结果', skill_icon: '📋', skill_index: 2 },
+    ];
+  }
+
+  /**
+   * 从技能链生成技能级节点和边
+   */
+  buildSkillGraph(
+    chains: AgentSkillChain[],
+    agents: AgentRegistration[],
+  ): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
+    const nodes: WorkflowNode[] = [];
+    const edges: WorkflowEdge[] = [];
+
+    // 1. 为每个 Agent 的每个技能创建节点
+    for (const chain of chains) {
+      const agentColor = this.getAgentColor(chain.agent_id);
+      const reg = agents.find(a => a.agent_id === chain.agent_id);
+
+      for (const skill of chain.skills) {
+        const skillId = `${chain.agent_id}::${skill.skill_index}`;
+        const node: WorkflowNode = {
+          id: skillId,
+          type: 'skill',
+          position: { x: 0, y: 0 }, // 布局器会设置
+          data: {
+            skill_id: skillId,
+            agent_id: chain.agent_id,
+            agent_emoji: chain.agent_emoji || reg?.emoji || '🤖',
+            agent_name: chain.agent_name || reg?.name || chain.agent_id,
+            skill_name: skill.skill_name,
+            skill_icon: skill.skill_icon,
+            skill_index: skill.skill_index,
+            skill_total: chain.skills.length,
+            status: 'idle',
+            is_crosscut: chain.is_crosscut,
+            agent_color: agentColor,
+            execution_stats: { total: 0, succeeded: 0, failed: 0, tokens: 0 },
+          },
+        };
+        nodes.push(node);
+
+        // 2. 同一 Agent 内部技能之间的边（内部边）
+        if (skill.skill_index > 0) {
+          const prevSkillId = `${chain.agent_id}::${skill.skill_index - 1}`;
+          edges.push({
+            id: `internal-${prevSkillId}-${skillId}`,
+            source: prevSkillId,
+            target: skillId,
+            type: 'internal',
+            data: {
+              label: '',
+              strength: 1,
+              source_info: 'skill_chain',
+            },
+          });
+        }
+      }
+    }
+
+    // 3. 跨 Agent 的边（最后一个技能 → 下一个 Agent 的第一个技能）
+    const mainChainOrder = ['trigger', 'variable', 'industry', 'asset'];
+    const mainChains = mainChainOrder
+      .map(key => chains.find(c => c.agent_id.toLowerCase().includes(key)))
+      .filter(Boolean) as AgentSkillChain[];
+
+    for (let i = 0; i < mainChains.length - 1; i++) {
+      const fromChain = mainChains[i];
+      const toChain = mainChains[i + 1];
+      const lastSkill = fromChain.skills[fromChain.skills.length - 1];
+      const firstSkill = toChain.skills[0];
+      const sourceId = `${fromChain.agent_id}::${lastSkill.skill_index}`;
+      const targetId = `${toChain.agent_id}::${firstSkill.skill_index}`;
+
+      edges.push({
+        id: `cross-${sourceId}-${targetId}`,
+        source: sourceId,
+        target: targetId,
+        type: 'cross_agent',
+        data: {
+          label: `交付${lastSkill.skill_name.replace(/^交付/, '')}`,
+          strength: 3,
+          source_info: 'main_chain',
+        },
+        animated: true,
+      });
+    }
+
+    // 4. Redteam 横切边（连接到主链每个 Agent 的最后一个技能）
+    const redteamChain = chains.find(c => c.is_crosscut);
+    if (redteamChain && redteamChain.skills.length > 0) {
+      const redteamFirstSkillId = `${redteamChain.agent_id}::0`;
+      for (const mainChain of mainChains) {
+        const lastSkill = mainChain.skills[mainChain.skills.length - 1];
+        const targetId = `${mainChain.agent_id}::${lastSkill.skill_index}`;
+        edges.push({
+          id: `crosscut-${redteamFirstSkillId}-${targetId}`,
+          source: redteamFirstSkillId,
+          target: targetId,
+          type: 'crosscut',
+          data: {
+            label: '质疑挑战',
+            strength: 1,
+            source_info: 'redteam_crosscut',
+          },
+          style: { strokeDasharray: '6 4' },
+        });
+      }
+    }
+
+    return { nodes, edges };
+  }
+
+  // ================================================================
   // 别名映射
   // ================================================================
 
@@ -596,21 +923,27 @@ export class GraphExtractor {
       }
     }
 
+    // Legacy: returns partial nodes for backward compat; not used in skill-level flow
     return Array.from(seen.values()).map(node => {
       const reg = agents.find(a => a.agent_id === node.agent_id);
+      const agentColor = this.getAgentColor(node.agent_id);
       return {
         id: node.agent_id,
-        type: 'agent' as const,
+        type: 'skill' as const,
         position: { x: 0, y: 0 },
         data: {
+          skill_id: node.agent_id,
           agent_id: node.agent_id,
-          name: reg?.name ?? node.name,
-          emoji: reg?.emoji ?? '',
-          role: node.role,
+          agent_emoji: reg?.emoji ?? '',
+          agent_name: reg?.name ?? node.name,
+          skill_name: node.role || node.name,
+          skill_icon: '⚡',
+          skill_index: 0,
+          skill_total: 1,
           status: 'idle' as const,
-          model: reg?.model ?? '',
           is_crosscut: node.is_crosscut,
-          execution_stats: { today_total: 0, today_succeeded: 0, today_failed: 0 },
+          agent_color: agentColor,
+          execution_stats: { total: 0, succeeded: 0, failed: 0, tokens: 0 },
         },
       };
     });
